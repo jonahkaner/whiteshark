@@ -1,0 +1,96 @@
+# =============================================================================
+# Automated AP Agent Configuration
+# =============================================================================
+
+# Gmail account that receives vendor invoices/payment requests
+shopfinder_email: "accounts@shopfinder.com"
+
+# Your email (the approver) — drafts are sent here for approval
+approver_email: "jonah@shopfinder.com"
+
+# Bank email address for wire transfer requests
+bank_email: "wires@bankname.com"
+
+# Morgan Stanley email address
+morgan_stanley_email: "advisor@morganstanley.com"
+
+# Path to the Excel ledger file
+ledger_path: "ap_ledger.xlsx"
+
+# Gmail API credentials file (OAuth2)
+credentials_path: "credentials.json"
+token_path: "token.json"
+
+# How many minutes between polling runs (used by cron)
+poll_interval_minutes: 5
+
+# Gmail label to watch for incoming invoices (or INBOX)
+watch_label: "INBOX"
+
+# Label applied to processed emails
+processed_label: "AP_PROCESSED"
+
+# Wire transfer email template (use {placeholders})
+wire_email_template: |
+  Dear Wire Transfer Department,
+
+  Please process the following wire transfer(s):
+
+  {wire_details}
+
+  Total number of wires: {wire_count}
+  Total amount: ${total_amount}
+
+  Please confirm once the transfers have been completed.
+
+  Thank you,
+  Accounts Payable
+  ShopFinder
+
+# Approval request email template
+approval_email_template: |
+  Hi,
+
+  This is a draft wire transfer request for your review.
+  Please reply with "APPROVED" to authorize sending.
+
+  --- DRAFT WIRE TRANSFER REQUEST ---
+
+  {wire_details}
+
+  Total number of wires: {wire_count}
+  Total amount: ${total_amount}
+
+  --- END DRAFT ---
+
+  This is a draft. Can I approve it?
+
+  Best,
+  AP Agent
+
+# Wire detail line template (per vendor)
+wire_detail_template: |
+  Wire #{wire_number}:
+    Vendor: {vendor_name}
+    Amount: ${amount}
+    Bank Name: {bank_name}
+    Routing Number: {routing_number}
+    Account Number: {account_number}
+    Reference/Invoice: {invoice_reference}
+
+# Vendor confirmation template (sent after wire is confirmed)
+vendor_confirmation_template: |
+  Dear {vendor_name},
+
+  Your payment has been processed via wire transfer.
+
+  Amount: ${amount}
+  Wire Confirmation Number: {confirmation_number}
+  Reference/Invoice: {invoice_reference}
+  Date Processed: {date_processed}
+
+  Please allow 1-2 business days for the funds to arrive.
+
+  Thank you,
+  Accounts Payable
+  ShopFinder

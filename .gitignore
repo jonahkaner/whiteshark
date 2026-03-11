@@ -1,0 +1,28 @@
+# Credentials & secrets
+credentials.json
+token.json
+*.key
+
+# State & data files
+ap_state.json
+ap_ledger.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
