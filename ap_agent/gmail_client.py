@@ -150,6 +150,7 @@ class GmailClient:
             "to": headers.get("to", ""),
             "date": headers.get("date", ""),
             "body": body,
+            "headers": headers,  # Full headers for security verification
         }
 
     def _extract_body(self, payload: dict) -> str:

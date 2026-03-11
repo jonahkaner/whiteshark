@@ -24,6 +24,23 @@ token_path: "token.json"
 # How many minutes between polling runs (used by cron)
 poll_interval_minutes: 5
 
+# =============================================================================
+# Security Settings
+# =============================================================================
+
+# Maximum amount for a single wire transfer (triggers warning if exceeded)
+max_single_wire: 100000
+
+# Maximum total wire amount per day (triggers warning if exceeded)
+max_daily_total: 500000
+
+# Maximum number of wires in a single batch
+max_wires_per_batch: 10
+
+# HMAC key for tamper detection on state/ledger files
+# CHANGE THIS to a random string. Or set AP_INTEGRITY_KEY env variable.
+integrity_key: "CHANGE-ME-to-a-random-secret-string"
+
 # Gmail label to watch for incoming invoices (or INBOX)
 watch_label: "INBOX"
 

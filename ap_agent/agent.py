@@ -9,6 +9,12 @@ from datetime import datetime
 from ap_agent.gmail_client import GmailClient
 from ap_agent.invoice_parser import InvoiceParser, PaymentRequest
 from ap_agent.ledger import Ledger
+from ap_agent.security import (
+    ApprovalCodeGenerator,
+    EmailVerifier,
+    IntegrityChecker,
+    WireLimits,
+)
 from ap_agent.wire_composer import WireComposer
 
 logger = logging.getLogger(__name__)
@@ -35,6 +41,22 @@ class APAgent:
         self.parser = InvoiceParser()
         self.composer = WireComposer(config)
         self.ledger = Ledger(config["ledger_path"])
+        self.integrity = IntegrityChecker(config.get("integrity_key"))
+        self.wire_limits = WireLimits(
+            max_single_wire=config.get("max_single_wire", 100_000),
+            max_daily_total=config.get("max_daily_total", 500_000),
+            max_wires_per_batch=config.get("max_wires_per_batch", 10),
+        )
+
+        # Configure email verification with trusted domains
+        EmailVerifier.configure(
+            config["approver_email"],
+            config["bank_email"],
+            config["morgan_stanley_email"],
+        )
+
+        # Verify state and ledger integrity before loading
+        self._verify_file_integrity()
         self.state = self._load_state()
 
     def run(self):
@@ -45,7 +67,29 @@ class APAgent:
         self.phase_check_approvals()
         self.phase_check_confirmations()
 
+        # Update integrity hashes after run
+        self._update_file_integrity()
+
         logger.info("=== AP Agent Run Complete ===")
+
+    def _verify_file_integrity(self):
+        """Check that state and ledger files haven't been tampered with."""
+        for path in [STATE_FILE, self.config["ledger_path"]]:
+            if os.path.exists(path) and not self.integrity.verify_hash(path):
+                logger.critical(
+                    "INTEGRITY CHECK FAILED for %s — file may have been tampered with. "
+                    "Agent halting.", path
+                )
+                raise SystemExit(
+                    f"Security: integrity check failed for {path}. "
+                    "Investigate before restarting."
+                )
+
+    def _update_file_integrity(self):
+        """Update integrity hashes after a successful run."""
+        for path in [STATE_FILE, self.config["ledger_path"]]:
+            if os.path.exists(path):
+                self.integrity.save_hash(path)
 
     # ── Phase 1: Intake ──────────────────────────────────────────────
 
@@ -116,8 +160,33 @@ class APAgent:
             })
             logger.info("Logged: %s — $%s (row %d)", req.vendor_name, req.amount, row)
 
+        # Check wire limits before proceeding
+        amounts = [r.amount for r in complete_requests]
+        limit_check = self.wire_limits.check(amounts)
+        if not limit_check["approved"]:
+            logger.warning("Wire limit violations detected:")
+            for v in limit_check["violations"]:
+                logger.warning("  - %s", v)
+            # Still send the draft, but flag the violations in the approval email
+            violation_warning = (
+                "\n⚠️ WIRE LIMIT WARNINGS:\n"
+                + "\n".join(f"  - {v}" for v in limit_check["violations"])
+                + "\n\nReview carefully before approving.\n\n"
+            )
+        else:
+            violation_warning = ""
+
+        # Generate unique approval code (prevents spoofed approvals)
+        approval_code = ApprovalCodeGenerator.generate()
+
         # Compose and send approval email
         approval_body = self.composer.compose_approval_email(complete_requests)
+        approval_body = (
+            violation_warning
+            + approval_body
+            + f"\n\nTo approve, reply with this code: {approval_code}\n"
+            + "(Do NOT just reply 'APPROVED' — use the code above for security.)\n"
+        )
         total_amount = sum(r.amount for r in complete_requests)
         subject = (
             f"[AP Agent] Wire Draft for Approval — "
@@ -141,6 +210,7 @@ class APAgent:
             "batch_id": batch_id,
             "thread_id": sent.get("threadId"),
             "message_id": sent.get("id"),
+            "approval_code": approval_code,
             "rows": batch_rows,
             "status": "AWAITING_APPROVAL",
         })
@@ -173,8 +243,8 @@ class APAgent:
 
         for batch in pending:
             thread_messages = self.gmail.get_replies_to(batch["thread_id"])
+            expected_code = batch.get("approval_code", "")
 
-            # Look for a reply from the approver containing "APPROVED"
             for msg in thread_messages:
                 if msg["id"] == batch["message_id"]:
                     continue  # skip our own sent message
@@ -183,12 +253,37 @@ class APAgent:
                 if sender.lower() != self.config["approver_email"].lower():
                     continue
 
-                body = msg.get("body", "").upper()
-                if "APPROVED" in body:
-                    logger.info("Batch %s APPROVED!", batch["batch_id"])
+                # Verify email authentication headers
+                headers = msg.get("headers", {})
+                verification = EmailVerifier.verify_sender_headers(headers)
+                if verification["suspicious"]:
+                    logger.warning(
+                        "SUSPICIOUS approval email detected for batch %s: %s",
+                        batch["batch_id"],
+                        verification["warnings"],
+                    )
+                    # Alert the real approver about the suspicious email
+                    self.gmail.send_email(
+                        to=self.config["approver_email"],
+                        subject="[AP Agent] SECURITY ALERT — Suspicious approval attempt",
+                        body=(
+                            f"A suspicious email was received attempting to approve "
+                            f"batch {batch['batch_id']}.\n\n"
+                            f"Warnings: {', '.join(verification['warnings'])}\n\n"
+                            f"The approval was NOT processed. If this was you, "
+                            f"please reply to the original draft with the approval code."
+                        ),
+                    )
+                    continue  # Do not process suspicious emails
+
+                body = msg.get("body", "")
+
+                # Check for the unique approval code
+                if expected_code and expected_code in body.upper():
+                    logger.info("Batch %s APPROVED (code verified)!", batch["batch_id"])
                     self._send_wire_request(batch)
                     break
-                elif "REJECTED" in body or "DENIED" in body:
+                elif "REJECTED" in body.upper() or "DENIED" in body.upper():
                     logger.info("Batch %s REJECTED.", batch["batch_id"])
                     batch["status"] = "REJECTED"
                     for entry in batch["rows"]:
