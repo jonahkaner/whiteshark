@@ -26,6 +26,8 @@ class WireComposer:
                 routing_number=req.routing_number,
                 account_number=req.account_number,
                 invoice_reference=req.invoice_reference or "N/A",
+                payment_terms=req.payment_terms or "N/A",
+                due_date=req.due_date.isoformat() if req.due_date else "N/A",
             )
             details.append(detail)
         return "\n".join(details)

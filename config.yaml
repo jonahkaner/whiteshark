@@ -41,6 +41,19 @@ max_wires_per_batch: 10
 # CHANGE THIS to a random string. Or set AP_INTEGRITY_KEY env variable.
 integrity_key: "CHANGE-ME-to-a-random-secret-string"
 
+# =============================================================================
+# Payment Timing
+# =============================================================================
+
+# When to send wires after approval. Options:
+#   "immediate"    — send as soon as approved (ignore due dates)
+#   "on_due_date"  — hold approved wires until the invoice due date
+#   "days_early"   — send N days before the due date (see days_before_due)
+payment_timing: "days_early"
+
+# Number of days before due date to send the wire (only used when timing = "days_early")
+days_before_due: 7
+
 # Gmail label to watch for incoming invoices (or INBOX)
 watch_label: "INBOX"
 
@@ -94,6 +107,8 @@ wire_detail_template: |
     Routing Number: {routing_number}
     Account Number: {account_number}
     Reference/Invoice: {invoice_reference}
+    Payment Terms: {payment_terms}
+    Due Date: {due_date}
 
 # Vendor confirmation template (sent after wire is confirmed)
 vendor_confirmation_template: |

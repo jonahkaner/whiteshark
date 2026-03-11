@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from ap_agent.gmail_client import GmailClient
 from ap_agent.invoice_parser import InvoiceParser, PaymentRequest
@@ -22,15 +22,20 @@ logger = logging.getLogger(__name__)
 # File to persist state between runs (batch tracking)
 STATE_FILE = "ap_state.json"
 
+# Payment timing modes
+TIMING_ON_DUE_DATE = "on_due_date"       # Send wire on the due date
+TIMING_DAYS_EARLY = "days_early"          # Send wire N days before due date
+TIMING_IMMEDIATE = "immediate"            # Send wire as soon as approved
+
 
 class APAgent:
     """Automated Accounts Payable agent.
 
     Runs as a state machine across multiple invocations:
       Phase 1: Intake — read vendor emails, parse, log to ledger
-      Phase 2: Draft — compose wire request, email approver for approval
-      Phase 3: Send — on approval, send wire to bank + Morgan Stanley
-      Phase 4: Confirm — on MS confirmation, notify vendors, mark complete
+      Phase 2: Check Approvals — look for approval replies
+      Phase 3: Scheduled Send — send approved wires when timing is right
+      Phase 4: Check Confirmations — MS confirmation → notify vendors
     """
 
     def __init__(self, config: dict):
@@ -47,6 +52,10 @@ class APAgent:
             max_daily_total=config.get("max_daily_total", 500_000),
             max_wires_per_batch=config.get("max_wires_per_batch", 10),
         )
+
+        # Payment timing configuration
+        self.payment_timing = config.get("payment_timing", TIMING_IMMEDIATE)
+        self.days_before_due = config.get("days_before_due", 7)
 
         # Configure email verification with trusted domains
         EmailVerifier.configure(
@@ -65,6 +74,7 @@ class APAgent:
 
         self.phase_intake()
         self.phase_check_approvals()
+        self.phase_send_scheduled_wires()
         self.phase_check_confirmations()
 
         # Update integrity hashes after run
@@ -106,7 +116,6 @@ class APAgent:
             return
 
         # Filter out emails from the approver, bank, or Morgan Stanley
-        # (those are handled in other phases)
         known_addresses = {
             self.config["approver_email"].lower(),
             self.config["bank_email"].lower(),
@@ -135,7 +144,6 @@ class APAgent:
 
         if not complete_requests:
             logger.info("No complete payment requests to process.")
-            # Mark emails as read even if incomplete
             for email in vendor_emails:
                 self.gmail.mark_as_read(email["id"])
                 self.gmail.add_label(
@@ -157,33 +165,44 @@ class APAgent:
                 "routing_number": req.routing_number,
                 "account_number": req.account_number,
                 "bank_name": req.bank_name,
+                "due_date": req.due_date.isoformat() if req.due_date else None,
+                "payment_terms": req.payment_terms or "",
             })
-            logger.info("Logged: %s — $%s (row %d)", req.vendor_name, req.amount, row)
+            logger.info(
+                "Logged: %s — $%s, due: %s (row %d)",
+                req.vendor_name, req.amount,
+                req.due_date.isoformat() if req.due_date else "N/A",
+                row,
+            )
 
-        # Check wire limits before proceeding
+        # Check wire limits
         amounts = [r.amount for r in complete_requests]
         limit_check = self.wire_limits.check(amounts)
         if not limit_check["approved"]:
             logger.warning("Wire limit violations detected:")
             for v in limit_check["violations"]:
                 logger.warning("  - %s", v)
-            # Still send the draft, but flag the violations in the approval email
             violation_warning = (
-                "\n⚠️ WIRE LIMIT WARNINGS:\n"
+                "\nWIRE LIMIT WARNINGS:\n"
                 + "\n".join(f"  - {v}" for v in limit_check["violations"])
                 + "\n\nReview carefully before approving.\n\n"
             )
         else:
             violation_warning = ""
 
-        # Generate unique approval code (prevents spoofed approvals)
+        # Generate unique approval code
         approval_code = ApprovalCodeGenerator.generate()
 
-        # Compose and send approval email
+        # Compose and send approval email with due date info
         approval_body = self.composer.compose_approval_email(complete_requests)
+
+        # Add due date / scheduling summary
+        schedule_summary = self._build_schedule_summary(complete_requests)
+
         approval_body = (
             violation_warning
             + approval_body
+            + schedule_summary
             + f"\n\nTo approve, reply with this code: {approval_code}\n"
             + "(Do NOT just reply 'APPROVED' — use the code above for security.)\n"
         )
@@ -205,7 +224,7 @@ class APAgent:
         for entry in batch_rows:
             self.ledger.update_status(entry["row"], "AWAITING_APPROVAL")
 
-        # Save batch state for tracking approval replies
+        # Save batch state
         self.state["pending_batches"].append({
             "batch_id": batch_id,
             "thread_id": sent.get("threadId"),
@@ -225,6 +244,80 @@ class APAgent:
 
         logger.info("Phase 1 complete: %d requests batched, awaiting approval.",
                      len(complete_requests))
+
+    def _build_schedule_summary(self, requests: list[PaymentRequest]) -> str:
+        """Build a summary of when wires will be sent based on timing config."""
+        lines = ["\n--- PAYMENT SCHEDULE ---"]
+
+        timing = self.payment_timing
+        if timing == TIMING_IMMEDIATE:
+            lines.append("Mode: IMMEDIATE — wires will be sent as soon as approved.")
+        elif timing == TIMING_ON_DUE_DATE:
+            lines.append("Mode: ON DUE DATE — wires will be held until each due date.")
+        elif timing == TIMING_DAYS_EARLY:
+            lines.append(
+                f"Mode: {self.days_before_due} DAYS EARLY — "
+                f"wires will be sent {self.days_before_due} days before due date."
+            )
+
+        lines.append("")
+        for i, req in enumerate(requests, 1):
+            due_str = req.due_date.isoformat() if req.due_date else "No due date found"
+            terms_str = req.payment_terms or "N/A"
+            send_date = self._calculate_send_date(req.due_date)
+            send_str = send_date.isoformat() if send_date else "Immediately on approval"
+
+            days_left = req.days_until_due
+            urgency = ""
+            if days_left is not None and days_left < 0:
+                urgency = f" *** OVERDUE by {abs(days_left)} days ***"
+            elif days_left is not None and days_left <= 3:
+                urgency = f" *** DUE IN {days_left} DAYS ***"
+
+            lines.append(
+                f"  Wire #{i}: {req.vendor_name}\n"
+                f"    Terms: {terms_str}\n"
+                f"    Due Date: {due_str}{urgency}\n"
+                f"    Scheduled Send: {send_str}"
+            )
+
+        lines.append("--- END SCHEDULE ---\n")
+        return "\n".join(lines)
+
+    def _calculate_send_date(self, due_date: date | None) -> date | None:
+        """Calculate when a wire should actually be sent based on timing config."""
+        if self.payment_timing == TIMING_IMMEDIATE or due_date is None:
+            return None  # Send immediately on approval
+
+        if self.payment_timing == TIMING_ON_DUE_DATE:
+            return due_date
+
+        if self.payment_timing == TIMING_DAYS_EARLY:
+            send_date = due_date - timedelta(days=self.days_before_due)
+            # Don't schedule in the past
+            if send_date <= date.today():
+                return date.today()
+            return send_date
+
+        return None
+
+    def _is_ready_to_send(self, batch_row: dict) -> bool:
+        """Check if a payment is ready to send based on timing config."""
+        if self.payment_timing == TIMING_IMMEDIATE:
+            return True
+
+        due_date_str = batch_row.get("due_date")
+        if not due_date_str:
+            # No due date found — send immediately
+            return True
+
+        due_date = date.fromisoformat(due_date_str)
+        send_date = self._calculate_send_date(due_date)
+
+        if send_date is None:
+            return True
+
+        return date.today() >= send_date
 
     # ── Phase 2: Check Approvals ─────────────────────────────────────
 
@@ -247,7 +340,7 @@ class APAgent:
 
             for msg in thread_messages:
                 if msg["id"] == batch["message_id"]:
-                    continue  # skip our own sent message
+                    continue
 
                 sender = self._extract_email(msg.get("from", ""))
                 if sender.lower() != self.config["approver_email"].lower():
@@ -262,7 +355,6 @@ class APAgent:
                         batch["batch_id"],
                         verification["warnings"],
                     )
-                    # Alert the real approver about the suspicious email
                     self.gmail.send_email(
                         to=self.config["approver_email"],
                         subject="[AP Agent] SECURITY ALERT — Suspicious approval attempt",
@@ -274,14 +366,27 @@ class APAgent:
                             f"please reply to the original draft with the approval code."
                         ),
                     )
-                    continue  # Do not process suspicious emails
+                    continue
 
                 body = msg.get("body", "")
 
-                # Check for the unique approval code
                 if expected_code and expected_code in body.upper():
                     logger.info("Batch %s APPROVED (code verified)!", batch["batch_id"])
-                    self._send_wire_request(batch)
+
+                    # Update approval in ledger
+                    for entry in batch["rows"]:
+                        self.ledger.update_approval(entry["row"])
+
+                    if self.payment_timing == TIMING_IMMEDIATE:
+                        # Send immediately
+                        self._send_wire_request(batch)
+                    else:
+                        # Schedule for later based on due dates
+                        batch["status"] = "APPROVED_SCHEDULED"
+                        logger.info(
+                            "Batch %s approved and scheduled for timed sending.",
+                            batch["batch_id"],
+                        )
                     break
                 elif "REJECTED" in body.upper() or "DENIED" in body.upper():
                     logger.info("Batch %s REJECTED.", batch["batch_id"])
@@ -292,9 +397,68 @@ class APAgent:
 
         self._save_state()
 
+    # ── Phase 3: Scheduled Wire Sending ──────────────────────────────
+
+    def phase_send_scheduled_wires(self):
+        """Send approved wires when their scheduled send date arrives."""
+        logger.info("Phase 3: Checking scheduled wires...")
+
+        scheduled = [
+            b for b in self.state.get("pending_batches", [])
+            if b["status"] == "APPROVED_SCHEDULED"
+        ]
+
+        if not scheduled:
+            logger.info("No scheduled wires pending.")
+            return
+
+        for batch in scheduled:
+            # Check which rows in this batch are ready to send
+            ready_rows = [r for r in batch["rows"] if self._is_ready_to_send(r)]
+            not_ready = [r for r in batch["rows"] if not self._is_ready_to_send(r)]
+
+            if not ready_rows:
+                # Log when the next payment is due
+                next_dates = []
+                for r in batch["rows"]:
+                    if r.get("due_date"):
+                        send_date = self._calculate_send_date(
+                            date.fromisoformat(r["due_date"])
+                        )
+                        if send_date:
+                            next_dates.append(send_date)
+                if next_dates:
+                    logger.info(
+                        "Batch %s: next send date is %s",
+                        batch["batch_id"],
+                        min(next_dates).isoformat(),
+                    )
+                continue
+
+            if not_ready:
+                # Split: send ready ones now, keep others scheduled
+                logger.info(
+                    "Batch %s: %d ready, %d waiting",
+                    batch["batch_id"], len(ready_rows), len(not_ready),
+                )
+                # Create a sub-batch for the ready rows
+                ready_batch = {
+                    **batch,
+                    "rows": ready_rows,
+                    "batch_id": batch["batch_id"] + "_partial",
+                }
+                self._send_wire_request(ready_batch)
+                # Keep remaining in schedule
+                batch["rows"] = not_ready
+            else:
+                # All ready — send the full batch
+                logger.info("Batch %s: all wires ready to send.", batch["batch_id"])
+                self._send_wire_request(batch)
+
+        self._save_state()
+
     def _send_wire_request(self, batch: dict):
         """Send the wire transfer email to bank and Morgan Stanley."""
-        # Reconstruct PaymentRequests from batch data
         requests = []
         for entry in batch["rows"]:
             req = PaymentRequest(
@@ -339,14 +503,13 @@ class APAgent:
         batch["ms_message_id"] = ms_sent.get("id")
 
         for entry in batch["rows"]:
-            self.ledger.update_approval(entry["row"])
             self.ledger.update_wire_sent(entry["row"])
 
-    # ── Phase 3: Check Confirmations ─────────────────────────────────
+    # ── Phase 4: Check Confirmations ─────────────────────────────────
 
     def phase_check_confirmations(self):
         """Check for Morgan Stanley wire confirmation replies."""
-        logger.info("Phase 3: Checking for wire confirmations...")
+        logger.info("Phase 4: Checking for wire confirmations...")
 
         sent_batches = [
             b for b in self.state.get("pending_batches", [])
@@ -372,7 +535,6 @@ class APAgent:
                 if sender.lower() != self.config["morgan_stanley_email"].lower():
                     continue
 
-                # Extract confirmation number(s) from the reply
                 body = msg.get("body", "")
                 confirmation_numbers = self._extract_confirmation_numbers(body)
 
@@ -400,7 +562,6 @@ class APAgent:
             matches = re.findall(pattern, body, re.IGNORECASE)
             numbers.extend(matches)
 
-        # Deduplicate while preserving order
         seen = set()
         unique = []
         for n in numbers:
@@ -414,7 +575,6 @@ class APAgent:
         date_processed = datetime.now().strftime("%Y-%m-%d")
 
         for i, entry in enumerate(batch["rows"]):
-            # Assign confirmation numbers round-robin if fewer than vendors
             conf_num = (
                 confirmation_numbers[i]
                 if i < len(confirmation_numbers)
@@ -441,7 +601,6 @@ class APAgent:
                 "Vendor notified: %s (conf: %s)", entry["vendor_name"], conf_num
             )
 
-            # Update ledger
             self.ledger.update_confirmation(entry["row"], conf_num)
             self.ledger.update_vendor_notified(entry["row"])
 
@@ -456,16 +615,14 @@ class APAgent:
 
     def _save_state(self):
         """Save state to disk."""
-        # Clean up completed/rejected batches older than 30 days
         active = [
             b for b in self.state.get("pending_batches", [])
             if b["status"] not in ("COMPLETED", "REJECTED")
         ]
-        # Keep recent completed ones for reference
         completed = [
             b for b in self.state.get("pending_batches", [])
             if b["status"] in ("COMPLETED", "REJECTED")
-        ][-50:]  # keep last 50
+        ][-50:]
 
         self.state["pending_batches"] = active + completed
 
