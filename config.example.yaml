@@ -3,53 +3,61 @@
 
 mode: paper  # paper | live
 
-exchanges:
-  binance:
-    api_key: ${BINANCE_API_KEY}
-    secret: ${BINANCE_SECRET}
-    sandbox: true
-  bybit:
-    api_key: ${BYBIT_API_KEY}
-    secret: ${BYBIT_SECRET}
-    sandbox: true
+# ── Kalshi (US-Legal Prediction Market) ────────────────────────────────
+# This is the primary strategy. Create an account at kalshi.com
+kalshi:
+  api_key: ${KALSHI_API_KEY}
+  private_key_path: ""           # Path to RSA private key (for production)
+  demo: true                     # true = demo account (play money), false = real
 
-risk:
-  max_position_pct: 0.20        # Max 20% of capital in one position
-  max_leverage: 3.0             # Max leverage on perp side
-  daily_loss_limit_pct: 0.02    # Kill switch at 2% daily loss
-  max_drawdown_pct: 0.10        # Max 10% drawdown from peak
-  max_open_positions: 10        # Max simultaneous positions
-
+# ── Kalshi Market Making Strategy ──────────────────────────────────────
 strategies:
-  funding_arb:
+  kalshi_mm:
     enabled: true
-    min_annualized_rate: 0.12   # 12% annualized minimum to enter
-    min_volume_multiple: 10     # 24h volume must be 10x position size
-    max_basis_drift_pct: 0.02   # Exit if basis drifts > 2%
-    check_interval_seconds: 300 # Check rates every 5 minutes
-    kelly_sizing: true          # Dynamic position sizing (bigger bets on better rates)
-    kelly_fraction: 0.5         # Half-Kelly (conservative)
-    max_position_pct: 0.35      # Max 35% per position even with Kelly
+    min_spread_cents: 3          # Only make markets with 3¢+ spread
+    quote_spread_cents: 2        # Our quotes are 2¢ wide inside the spread
+    max_position_per_market: 200 # Max 200 contracts per market
+    max_total_exposure: 5000     # Max $5,000 deployed at once
+    max_markets: 20              # Make up to 20 markets simultaneously
+    min_volume: 50               # Skip illiquid markets
+    requote_interval_seconds: 30 # Re-check every 30 seconds
+
+  # ── Crypto Funding Arb (Optional, non-US exchanges) ──────────────────
+  funding_arb:
+    enabled: false               # Disabled by default (needs non-US exchange)
+    min_annualized_rate: 0.12
+    kelly_sizing: true
+    kelly_fraction: 0.5
+    max_position_pct: 0.35
     pairs:
       - BTC/USDT
       - ETH/USDT
       - SOL/USDT
-      - ARB/USDT
-      - DOGE/USDT
 
   market_maker:
     enabled: false
-    spread_multiplier: 1.5      # Quote spread = volatility * multiplier
-    max_inventory_pct: 0.05     # Max 5% of capital in inventory per asset
-    levels: 3                   # Order book levels per side
-    pairs:
-      - LINK/USDT
-      - AVAX/USDT
 
+# ── Crypto Exchanges (Optional, for funding arb) ──────────────────────
+exchanges: {}
+  # binance:
+  #   api_key: ${BINANCE_API_KEY}
+  #   secret: ${BINANCE_SECRET}
+  #   sandbox: true
+
+# ── Risk Management ───────────────────────────────────────────────────
+risk:
+  max_position_pct: 0.20
+  max_leverage: 1.0              # No leverage on Kalshi
+  daily_loss_limit_pct: 0.02     # Stop trading at 2% daily loss
+  max_drawdown_pct: 0.10         # Stop at 10% drawdown from peak
+  max_open_positions: 50         # Can have many small prediction market positions
+
+# ── Logging ────────────────────────────────────────────────────────────
 logging:
   level: INFO
   file: logs/quicksand.log
 
+# ── Alerts ─────────────────────────────────────────────────────────────
 alerts:
   telegram:
     enabled: false

@@ -1,160 +1,166 @@
 # Quicksand Setup Guide
 
-Get the bot running in ~15 minutes. You need two things: a crypto exchange account (where the money lives) and a server to run the bot.
+Get the bot running in ~15 minutes. You need a Kalshi account and a server.
 
 ---
 
-## Step 1: Create a Crypto Exchange Account (5 min)
+## Step 1: Create a Kalshi Account (5 min)
 
-The bot needs an exchange account to trade on. Pick ONE:
+Kalshi is a CFTC-regulated prediction market — fully legal in the US.
 
-### Option A: Bybit (Recommended — easiest for US users)
-1. Go to [bybit.com](https://www.bybit.com) and create an account
-2. Complete identity verification (KYC)
-3. Deposit USDT:
-   - Buy USDT with credit card on Bybit, OR
-   - Transfer USDT from Coinbase/another exchange
+1. Go to [kalshi.com](https://kalshi.com) and create an account
+2. Complete identity verification (required, it's regulated)
+3. Deposit money:
+   - **Bank transfer (ACH)**: Free, takes 1-3 days
+   - **Debit card**: Instant, 2% fee
 4. Create API keys:
-   - Go to **Account → API Management → Create New Key**
-   - Name it "quicksand"
-   - Permissions: **Read + Trade** (do NOT enable Withdraw)
-   - Save the **API Key** and **Secret Key** — you'll need these
-
-### Option B: Binance (Largest exchange, best liquidity)
-1. Go to [binance.com](https://www.binance.com) and create an account
-2. Complete identity verification
-3. Deposit USDT (bank transfer, card, or crypto transfer)
-4. Create API keys:
-   - Go to **Account → API Management → Create API**
-   - Permissions: **Enable Spot & Margin Trading + Enable Futures**
-   - **IP restrict recommended** (add your server's IP)
-   - Save the API Key and Secret
-
-### Option C: OKX
-1. Go to [okx.com](https://www.okx.com) and create an account
-2. Verify identity, deposit USDT
-3. Create API keys under **Settings → API**
+   - Go to **Settings → API Keys**
+   - Create a new key
+   - Save the **API Key** — you'll need this
 
 **How much to start with?**
-- Minimum: $1,000 (enough to test with real trades)
-- Recommended: $5,000-$10,000 (enough for meaningful returns)
-- The bot starts in **paper mode** (fake money) so you can test first
+- Minimum: $100 (enough to test with real trades in demo)
+- Recommended start: $1,000-$5,000
+- The bot starts in **demo mode** (play money) so you can test first
 
 ---
 
-## Step 2: Set Up Telegram Alerts (3 min)
+## Step 2: Set Up Telegram Alerts (3 min, optional)
 
 Get trade notifications on your phone:
 
 1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts to create a bot
-3. BotFather gives you a **token** like `123456:ABCdefGHIjklMNO` — save it
-4. Open your new bot in Telegram and send it any message (like "hi")
-5. Visit this URL in your browser (replace YOUR_TOKEN):
+2. Send `/newbot` and follow the prompts
+3. Save the **token** it gives you
+4. Message your new bot "hi", then visit:
    ```
    https://api.telegram.org/botYOUR_TOKEN/getUpdates
    ```
-6. Find `"chat":{"id":XXXXXXXX}` in the response — that's your **chat_id**
+5. Find `"chat":{"id":XXXXXXXX}` — that's your **chat_id**
 
 ---
 
 ## Step 3: Configure the Bot (2 min)
 
-1. Copy the example config:
-   ```bash
-   cp config.example.yaml config.yaml
-   ```
+```bash
+cp config.example.yaml config.yaml
+```
 
-2. Edit `config.yaml` with your values:
-   ```yaml
-   mode: paper  # Start with paper! Change to "live" when ready
+Edit `config.yaml`:
+```yaml
+mode: paper  # Start with paper! Change to "live" when ready
 
-   exchanges:
-     bybit:                              # or "binance" or "okx"
-       api_key: "your-api-key-here"
-       secret: "your-secret-key-here"
-       sandbox: false                     # false = real exchange
+kalshi:
+  api_key: "your-kalshi-api-key"
+  demo: true  # true = play money, false = real money
 
-   alerts:
-     telegram:
-       enabled: true
-       bot_token: "your-telegram-bot-token"
-       chat_id: "your-chat-id"
-   ```
+alerts:
+  telegram:
+    enabled: true
+    bot_token: "your-telegram-bot-token"
+    chat_id: "your-chat-id"
+```
 
 ---
 
-## Step 4: Run the Bot (1 min)
+## Step 4: Run the Bot
 
 ```bash
-# Install dependencies
+# Install
 pip install -e .
 
-# Test connection (connects, shows balance, exits)
-quicksand --config config.yaml --dry-run
-
-# Start in paper mode (simulated trades, no real money)
-quicksand --config config.yaml --paper
-
-# Start the web dashboard (access from phone!)
+# Start the web dashboard (access from your phone!)
 python -m quicksand.web.run
-# Then open http://your-server-ip:8000 on your phone
+
+# Open on your phone: http://your-server-ip:8000
+# Hit the "Start Bot" button
 ```
+
+That's it. The dashboard shows your balance, P&L, open positions, and trades.
 
 ---
 
 ## Step 5: Go Live
 
-Once you've run paper mode for a few days and are happy:
+After testing in demo mode for a few days:
 
 1. Edit `config.yaml`:
    ```yaml
    mode: live
+   kalshi:
+     demo: false
    ```
-
-2. Start with a small amount ($1,000) to verify real trades work
-3. Scale up gradually: $1K → $5K → $10K → $50K
+2. Start small ($500-$1,000)
+3. Watch it run for a week
+4. Scale up as you're comfortable
 
 ---
 
-## Running 24/7 (Server Options)
+## How the Strategy Works
 
-The bot needs to run continuously. Options from easiest to most robust:
+**Market Making on Prediction Markets**
 
-### Option A: DigitalOcean Droplet ($6/month)
-1. Create account at [digitalocean.com](https://www.digitalocean.com)
-2. Create a Droplet (Ubuntu, $6/month Basic)
-3. SSH in, clone the repo, install Python, run the bot
-4. Use `screen` or `tmux` to keep it running
+Kalshi has binary event contracts (YES/NO). Example:
+- "Will BTC be above $100K on April 15?"
+- YES is priced at 55¢, NO at 45¢
+- Spread: 5¢
 
-### Option B: Docker (any VPS)
+The bot:
+1. Scans 200+ active markets for wide spreads
+2. Places buy orders on both sides (buy YES low, buy NO low)
+3. When both sides fill, captures the spread as profit
+4. **Maker fees are ZERO** — every cent of spread is profit
+
+It runs across 20+ markets simultaneously, making small profits on each.
+
+**Expected returns:**
+- Conservative: 10-20% annually
+- Moderate: 20-40% annually
+- Aggressive: 40%+ (higher risk, more markets, tighter spreads)
+
+---
+
+## Running 24/7
+
+### Option A: DigitalOcean Droplet ($6/month, easiest)
+1. Create account at [digitalocean.com](https://digitalocean.com)
+2. Create a Droplet (Ubuntu, $6/month)
+3. SSH in:
+   ```bash
+   git clone https://github.com/jonahkaner/whiteshark.git
+   cd whiteshark
+   pip install -e .
+   cp config.example.yaml config.yaml
+   # Edit config.yaml with your keys
+   screen -S quicksand
+   python -m quicksand.web.run
+   # Press Ctrl+A then D to detach
+   ```
+4. Bookmark `http://your-droplet-ip:8000` on your phone
+
+### Option B: Docker
 ```bash
 docker compose up -d
 ```
-
-### Option C: Railway / Render (easiest, no server management)
-1. Connect your GitHub repo
-2. Set environment variables for API keys
-3. Deploy — it runs automatically
 
 ---
 
 ## Safety Notes
 
-- **Start with paper mode** — always test before using real money
-- **Never enable withdrawal permissions** on your API keys
-- **IP-restrict your API keys** if your exchange supports it
-- The bot has a **circuit breaker** — if it loses 2% in a day, it stops automatically
-- You'll get a **Telegram alert** if anything goes wrong
+- **Start with demo mode** (play money) — always test first
+- The bot has a **circuit breaker** — stops trading at 2% daily loss
+- You'll get **Telegram alerts** if anything goes wrong
+- Kalshi is CFTC-regulated — your funds are protected
+- Maximum $25,000 per contract position (Kalshi limit)
+- The bot uses **zero leverage** — you can't lose more than you deposit
 
 ---
 
 ## Quick Reference
 
-| Command | What it does |
-|---------|-------------|
-| `quicksand --dry-run` | Test exchange connection |
-| `quicksand --paper` | Run with fake money |
-| `quicksand` | Run live (uses config.yaml mode) |
-| `python -m quicksand.web.run` | Start web dashboard |
-| Open `http://server:8000` | View dashboard on phone |
+| What | Command |
+|------|---------|
+| Start dashboard | `python -m quicksand.web.run` |
+| View on phone | `http://server-ip:8000` |
+| Paper mode | Set `mode: paper` in config |
+| Live mode | Set `mode: live` and `demo: false` |

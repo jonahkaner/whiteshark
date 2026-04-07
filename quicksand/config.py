@@ -44,9 +44,28 @@ class MarketMakerConfig(BaseModel):
     pairs: list[str] = []
 
 
+class KalshiConfig(BaseModel):
+    api_key: str = ""
+    private_key_path: str = ""
+    demo: bool = True  # Use demo/sandbox mode
+
+
+class KalshiMMConfig(BaseModel):
+    enabled: bool = True
+    min_spread_cents: int = 3
+    quote_spread_cents: int = 2
+    max_position_per_market: int = 200
+    max_total_exposure: float = 5000
+    max_markets: int = 20
+    min_volume: int = 50
+    min_open_interest: int = 20
+    requote_interval_seconds: int = 30
+
+
 class StrategiesConfig(BaseModel):
     funding_arb: FundingArbConfig = FundingArbConfig()
     market_maker: MarketMakerConfig = MarketMakerConfig()
+    kalshi_mm: KalshiMMConfig = KalshiMMConfig()
 
 
 class LoggingConfig(BaseModel):
@@ -67,6 +86,7 @@ class AlertsConfig(BaseModel):
 class Config(BaseModel):
     mode: str = "paper"
     exchanges: dict[str, ExchangeConfig] = {}
+    kalshi: KalshiConfig = KalshiConfig()
     risk: RiskConfig = RiskConfig()
     strategies: StrategiesConfig = StrategiesConfig()
     logging: LoggingConfig = LoggingConfig()
