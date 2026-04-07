@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quicksand</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 16px;
+            padding-bottom: 80px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .header h1 { font-size: 22px; color: #fff; }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            display: inline-block; margin-right: 6px;
+        }
+        .status-dot.on { background: #00e676; box-shadow: 0 0 8px #00e676; }
+        .status-dot.off { background: #666; }
+
+        .mode-badge {
+            font-size: 11px; padding: 2px 8px; border-radius: 10px;
+            text-transform: uppercase; font-weight: 600;
+        }
+        .mode-badge.paper { background: #ff9800; color: #000; }
+        .mode-badge.live { background: #f44336; color: #fff; }
+
+        /* Big number card */
+        .balance-card {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+        .balance-label { font-size: 13px; color: #888; margin-bottom: 4px; }
+        .balance-amount {
+            font-size: 42px; font-weight: 700; color: #fff;
+            font-variant-numeric: tabular-nums;
+        }
+        .pnl-row {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-top: 12px;
+        }
+        .pnl-item { text-align: center; }
+        .pnl-label { font-size: 11px; color: #888; }
+        .pnl-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .pnl-value.positive { color: #00e676; }
+        .pnl-value.negative { color: #ff5252; }
+        .pnl-value.neutral { color: #888; }
+
+        /* Stats grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .stat-card {
+            background: #141420;
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .stat-label { font-size: 11px; color: #666; margin-bottom: 2px; }
+        .stat-value { font-size: 20px; font-weight: 600; }
+
+        /* Chart */
+        .chart-card {
+            background: #141420;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .chart-card h3 { font-size: 14px; color: #888; margin-bottom: 12px; }
+        #equity-chart {
+            width: 100%;
+            height: 200px;
+        }
+
+        /* Positions / Trades */
+        .section-title {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .trade-card {
+            background: #141420;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 8px;
+        }
+        .trade-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trade-pair { font-weight: 600; font-size: 15px; }
+        .trade-pnl { font-weight: 600; font-size: 15px; }
+        .trade-detail { font-size: 12px; color: #666; }
+
+        /* Start/Stop button */
+        .action-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            padding: 12px 16px;
+            background: #0a0a0f;
+            border-top: 1px solid #222;
+        }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-start { background: #00e676; color: #000; }
+        .btn-start:hover { background: #00c853; }
+        .btn-stop { background: #ff5252; color: #fff; }
+        .btn-stop:hover { background: #ff1744; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .empty-state {
+            text-align: center;
+            color: #444;
+            padding: 32px;
+            font-size: 14px;
+        }
+
+        /* Canvas for chart */
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            <span class="status-dot off" id="status-dot"></span>
+            Quicksand
+        </h1>
+        <span class="mode-badge paper" id="mode-badge">PAPER</span>
+    </div>
+
+    <!-- Balance -->
+    <div class="balance-card">
+        <div class="balance-label">Total Balance</div>
+        <div class="balance-amount" id="balance">$0.00</div>
+        <div class="pnl-row">
+            <div class="pnl-item">
+                <div class="pnl-label">Today</div>
+                <div class="pnl-value neutral" id="daily-pnl">$0.00</div>
+            </div>
+            <div class="pnl-item">
+                <div class="pnl-label">Total P&L</div>
+                <div class="pnl-value neutral" id="total-pnl">$0.00</div>
+            </div>
+            <div class="pnl-item">
+                <div class="pnl-label">Return</div>
+                <div class="pnl-value neutral" id="total-return">0.00%</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">Open Positions</div>
+            <div class="stat-value" id="positions">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Capital Used</div>
+            <div class="stat-value" id="utilization">0%</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Max Drawdown</div>
+            <div class="stat-value" id="drawdown">0%</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Uptime</div>
+            <div class="stat-value" id="uptime">--</div>
+        </div>
+    </div>
+
+    <!-- Equity Chart -->
+    <div class="chart-card">
+        <h3>Equity Curve</h3>
+        <canvas id="equity-chart"></canvas>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="section-title">
+        <span>Open Positions</span>
+        <span id="position-count"></span>
+    </div>
+    <div id="positions-list">
+        <div class="empty-state">No open positions</div>
+    </div>
+
+    <!-- Recent Trades -->
+    <div class="section-title" style="margin-top: 16px;">
+        <span>Recent Trades</span>
+    </div>
+    <div id="trades-list">
+        <div class="empty-state">No trades yet</div>
+    </div>
+
+    <!-- Start/Stop -->
+    <div class="action-bar">
+        <button class="btn btn-start" id="action-btn" onclick="toggleBot()">
+            Start Bot
+        </button>
+    </div>
+
+    <script>
+        let isRunning = false;
+        let chartData = [];
+
+        // Format currency
+        function fmt(n) {
+            return '$' + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        function fmtSigned(n) {
+            const prefix = n >= 0 ? '+$' : '-$';
+            return prefix + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        function fmtPct(n) { return (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; }
+        function pnlClass(n) { return n > 0 ? 'positive' : n < 0 ? 'negative' : 'neutral'; }
+
+        function formatUptime(seconds) {
+            if (!seconds) return '--';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            if (h > 24) return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+            if (h > 0) return h + 'h ' + m + 'm';
+            return m + 'm';
+        }
+
+        // Fetch and update status
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const s = await res.json();
+
+                isRunning = s.running;
+                document.getElementById('status-dot').className = 'status-dot ' + (s.running ? 'on' : 'off');
+
+                const badge = document.getElementById('mode-badge');
+                badge.textContent = s.mode.toUpperCase();
+                badge.className = 'mode-badge ' + s.mode;
+
+                document.getElementById('balance').textContent = fmt(s.equity);
+
+                const dailyEl = document.getElementById('daily-pnl');
+                dailyEl.textContent = fmtSigned(s.daily_pnl);
+                dailyEl.className = 'pnl-value ' + pnlClass(s.daily_pnl);
+
+                const totalEl = document.getElementById('total-pnl');
+                totalEl.textContent = fmtSigned(s.total_pnl);
+                totalEl.className = 'pnl-value ' + pnlClass(s.total_pnl);
+
+                const returnEl = document.getElementById('total-return');
+                returnEl.textContent = fmtPct(s.total_pnl_pct || 0);
+                returnEl.className = 'pnl-value ' + pnlClass(s.total_pnl_pct || 0);
+
+                document.getElementById('positions').textContent = s.positions;
+                document.getElementById('utilization').textContent = (s.utilization_pct || 0) + '%';
+                document.getElementById('drawdown').textContent = (s.drawdown_pct || 0) + '%';
+                document.getElementById('uptime').textContent = formatUptime(s.uptime);
+
+                const btn = document.getElementById('action-btn');
+                if (s.running) {
+                    btn.textContent = 'Stop Bot';
+                    btn.className = 'btn btn-stop';
+                } else {
+                    btn.textContent = 'Start Bot';
+                    btn.className = 'btn btn-start';
+                }
+            } catch (e) {
+                console.error('Status fetch failed:', e);
+            }
+        }
+
+        // Fetch and render positions
+        async function updatePositions() {
+            try {
+                const res = await fetch('/api/positions');
+                const positions = await res.json();
+                const container = document.getElementById('positions-list');
+
+                if (positions.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No open positions</div>';
+                    return;
+                }
+
+                container.innerHTML = positions.map(p => `
+                    <div class="trade-card">
+                        <div class="trade-header">
+                            <span class="trade-pair">${p.pair}</span>
+                            <span class="trade-pnl ${pnlClass(p.pnl)}">${fmtSigned(p.pnl)}</span>
+                        </div>
+                        <div class="trade-detail">
+                            ${p.exchange} &middot; ${p.direction} &middot;
+                            ${fmt(p.notional)} &middot; Funding: ${fmtSigned(p.funding_collected)}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {}
+        }
+
+        // Fetch and render trades
+        async function updateTrades() {
+            try {
+                const res = await fetch('/api/trades');
+                const trades = await res.json();
+                const container = document.getElementById('trades-list');
+
+                if (trades.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No trades yet</div>';
+                    return;
+                }
+
+                container.innerHTML = trades.reverse().slice(0, 20).map(t => `
+                    <div class="trade-card">
+                        <div class="trade-header">
+                            <span class="trade-pair">${t.symbol || t.pair || ''}</span>
+                            <span class="trade-pnl ${pnlClass(t.pnl)}">${fmtSigned(t.pnl)}</span>
+                        </div>
+                        <div class="trade-detail">
+                            ${t.direction || ''} &middot; Funding: ${fmtSigned(t.funding || 0)} &middot; Fees: ${fmt(t.fees || 0)}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {}
+        }
+
+        // Simple equity chart using canvas
+        async function updateChart() {
+            try {
+                const res = await fetch('/api/equity');
+                chartData = await res.json();
+                drawChart();
+            } catch (e) {}
+        }
+
+        function drawChart() {
+            const canvas = document.getElementById('equity-chart');
+            const ctx = canvas.getContext('2d');
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width - 32;
+            canvas.height = 200;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (chartData.length < 2) {
+                ctx.fillStyle = '#444';
+                ctx.font = '14px system-ui';
+                ctx.textAlign = 'center';
+                ctx.fillText('Waiting for data...', canvas.width / 2, 100);
+                return;
+            }
+
+            const values = chartData.map(d => d.equity);
+            const min = Math.min(...values) * 0.998;
+            const max = Math.max(...values) * 1.002;
+            const range = max - min || 1;
+
+            const w = canvas.width;
+            const h = canvas.height;
+            const padding = 4;
+
+            // Draw line
+            ctx.beginPath();
+            ctx.strokeStyle = values[values.length - 1] >= values[0] ? '#00e676' : '#ff5252';
+            ctx.lineWidth = 2;
+
+            for (let i = 0; i < values.length; i++) {
+                const x = padding + (i / (values.length - 1)) * (w - 2 * padding);
+                const y = h - padding - ((values[i] - min) / range) * (h - 2 * padding);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // Fill gradient under line
+            const lastX = padding + (w - 2 * padding);
+            ctx.lineTo(lastX, h);
+            ctx.lineTo(padding, h);
+            ctx.closePath();
+
+            const gradient = ctx.createLinearGradient(0, 0, 0, h);
+            const color = values[values.length - 1] >= values[0] ? '0, 230, 118' : '255, 82, 82';
+            gradient.addColorStop(0, `rgba(${color}, 0.3)`);
+            gradient.addColorStop(1, `rgba(${color}, 0.0)`);
+            ctx.fillStyle = gradient;
+            ctx.fill();
+        }
+
+        // Start/Stop toggle
+        async function toggleBot() {
+            const btn = document.getElementById('action-btn');
+            btn.disabled = true;
+
+            try {
+                if (isRunning) {
+                    await fetch('/api/stop', {method: 'POST'});
+                } else {
+                    await fetch('/api/start', {method: 'POST'});
+                }
+            } catch (e) {
+                console.error('Toggle failed:', e);
+            }
+
+            btn.disabled = false;
+            setTimeout(updateStatus, 500);
+        }
+
+        // Auto-refresh
+        updateStatus();
+        updatePositions();
+        updateTrades();
+        updateChart();
+
+        setInterval(updateStatus, 5000);
+        setInterval(updatePositions, 10000);
+        setInterval(updateTrades, 15000);
+        setInterval(updateChart, 30000);
+
+        // Redraw chart on resize
+        window.addEventListener('resize', drawChart);
+    </script>
+</body>
+</html>

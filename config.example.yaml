@@ -23,10 +23,13 @@ risk:
 strategies:
   funding_arb:
     enabled: true
-    min_annualized_rate: 0.15   # 15% annualized minimum to enter
+    min_annualized_rate: 0.12   # 12% annualized minimum to enter
     min_volume_multiple: 10     # 24h volume must be 10x position size
     max_basis_drift_pct: 0.02   # Exit if basis drifts > 2%
     check_interval_seconds: 300 # Check rates every 5 minutes
+    kelly_sizing: true          # Dynamic position sizing (bigger bets on better rates)
+    kelly_fraction: 0.5         # Half-Kelly (conservative)
+    max_position_pct: 0.35      # Max 35% per position even with Kelly
     pairs:
       - BTC/USDT
       - ETH/USDT
