@@ -72,14 +72,36 @@ def run_with_synthetic_data(args: argparse.Namespace, config: BacktestConfig) ->
     """Run backtest with synthetic data for testing."""
     from quicksand.backtest.synthetic import generate_synthetic_data
 
-    print(f"Generating {args.days} days of synthetic data for {args.pair}...")
-    data = generate_synthetic_data(
-        symbol=args.pair,
-        days=args.days,
-        base_price=60000 if "BTC" in args.pair else 3000,
-    )
-    engine = BacktestEngine(config)
-    result = engine.run(data)
+    # Multi-pair synthetic data
+    pairs_config = [
+        {"symbol": "BTC/USDT", "base_price": 60000, "mean_rate": 0.0003, "funding_vol": 0.0005, "seed": 42},
+        {"symbol": "ETH/USDT", "base_price": 3000, "mean_rate": 0.00035, "funding_vol": 0.0006, "seed": 99},
+        {"symbol": "SOL/USDT", "base_price": 150, "mean_rate": 0.0004, "funding_vol": 0.0008, "seed": 77},
+    ]
+
+    if args.pair != "BTC/USDT":
+        # Single pair mode
+        print(f"Generating {args.days} days of synthetic data for {args.pair}...")
+        data = generate_synthetic_data(
+            symbol=args.pair,
+            days=args.days,
+            base_price=60000 if "BTC" in args.pair else 3000,
+        )
+        engine = BacktestEngine(config)
+        result = engine.run(data)
+    else:
+        # Multi-pair mode
+        print(f"Generating {args.days} days of synthetic data for {len(pairs_config)} pairs...")
+        datasets = []
+        for pc in pairs_config:
+            datasets.append(generate_synthetic_data(
+                symbol=pc["symbol"], days=args.days, base_price=pc["base_price"],
+                mean_funding_rate=pc["mean_rate"], funding_vol=pc["funding_vol"],
+                seed=pc["seed"],
+            ))
+        engine = BacktestEngine(config)
+        result = engine.run_multi(datasets)
+
     report = print_report(result)
     print(report)
 

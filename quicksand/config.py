@@ -30,7 +30,10 @@ class FundingArbConfig(BaseModel):
     min_volume_multiple: float = 10.0
     max_basis_drift_pct: float = 0.02
     check_interval_seconds: int = 300
-    pairs: list[str] = ["BTC/USDT", "ETH/USDT"]
+    kelly_sizing: bool = True  # Use Kelly criterion for dynamic position sizing
+    kelly_fraction: float = 0.5  # Half-Kelly (conservative)
+    max_position_pct: float = 0.35  # Max per-position cap even with Kelly
+    pairs: list[str] = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT", "DOGE/USDT"]
 
 
 class MarketMakerConfig(BaseModel):
