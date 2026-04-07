@@ -1,0 +1,54 @@
+# Quicksand Trading Bot Configuration
+# Copy to config.yaml and fill in your values
+
+mode: paper  # paper | live
+
+exchanges:
+  binance:
+    api_key: ${BINANCE_API_KEY}
+    secret: ${BINANCE_SECRET}
+    sandbox: true
+  bybit:
+    api_key: ${BYBIT_API_KEY}
+    secret: ${BYBIT_SECRET}
+    sandbox: true
+
+risk:
+  max_position_pct: 0.20        # Max 20% of capital in one position
+  max_leverage: 3.0             # Max leverage on perp side
+  daily_loss_limit_pct: 0.02    # Kill switch at 2% daily loss
+  max_drawdown_pct: 0.10        # Max 10% drawdown from peak
+  max_open_positions: 10        # Max simultaneous positions
+
+strategies:
+  funding_arb:
+    enabled: true
+    min_annualized_rate: 0.15   # 15% annualized minimum to enter
+    min_volume_multiple: 10     # 24h volume must be 10x position size
+    max_basis_drift_pct: 0.02   # Exit if basis drifts > 2%
+    check_interval_seconds: 300 # Check rates every 5 minutes
+    pairs:
+      - BTC/USDT
+      - ETH/USDT
+      - SOL/USDT
+      - ARB/USDT
+      - DOGE/USDT
+
+  market_maker:
+    enabled: false
+    spread_multiplier: 1.5      # Quote spread = volatility * multiplier
+    max_inventory_pct: 0.05     # Max 5% of capital in inventory per asset
+    levels: 3                   # Order book levels per side
+    pairs:
+      - LINK/USDT
+      - AVAX/USDT
+
+logging:
+  level: INFO
+  file: logs/quicksand.log
+
+alerts:
+  telegram:
+    enabled: false
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
