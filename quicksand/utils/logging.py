@@ -28,7 +28,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
             structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.get_level_from_name(level)
+            structlog._log_levels.NAME_TO_LEVEL[level.lower()]
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
