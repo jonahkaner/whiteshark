@@ -321,11 +321,11 @@ async def start_bot():
     # Get starting balance
     if not _config.is_paper and kalshi_cfg.private_key_path:
         try:
-            _initial_balance = await _connector.get_portfolio_value()
+            _initial_balance = _config.initial_capital
         except Exception:
-            _initial_balance = 10000  # Fallback
+            _initial_balance = _config.initial_capital
     else:
-        _initial_balance = 10000  # Paper mode default
+        _initial_balance = _config.initial_capital
 
     # Create market maker
     mm_cfg = _config.strategies.kalshi_mm

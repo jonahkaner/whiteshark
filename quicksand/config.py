@@ -85,6 +85,7 @@ class AlertsConfig(BaseModel):
 
 class Config(BaseModel):
     mode: str = "paper"
+    initial_capital: float = 2500  # Starting deposit for P&L tracking
     exchanges: dict[str, ExchangeConfig] = {}
     kalshi: KalshiConfig = KalshiConfig()
     risk: RiskConfig = RiskConfig()
