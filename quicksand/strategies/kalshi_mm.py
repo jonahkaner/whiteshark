@@ -129,6 +129,25 @@ class KalshiMarketMaker:
             log.warning("market_scan_failed", error=str(e))
             return
 
+        # Debug: log first few markets to see what we're getting
+        if markets:
+            sample = markets[:3]
+            for m in sample:
+                log.info(
+                    "market_sample",
+                    ticker=m.ticker,
+                    title=m.title[:40] if m.title else "",
+                    yes_bid=m.yes_bid,
+                    yes_ask=m.yes_ask,
+                    spread=m.spread,
+                    volume=m.volume,
+                    oi=m.open_interest,
+                    mid=m.mid_price,
+                    status=m.status,
+                )
+        else:
+            log.warning("no_markets_returned")
+
         # Filter and rank markets
         candidates = []
         for market in markets:
@@ -145,6 +164,8 @@ class KalshiMarketMaker:
                 continue
 
             candidates.append(market)
+
+        log.info("scan_results", total=len(markets), candidates=len(candidates))
 
         # Rank by spread × volume (best opportunities first)
         candidates.sort(key=lambda m: m.spread * m.volume, reverse=True)

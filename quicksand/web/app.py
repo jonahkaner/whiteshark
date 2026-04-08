@@ -154,6 +154,18 @@ async def get_trades():
         return []
 
 
+@app.get("/api/debug/markets")
+async def debug_markets():
+    """Debug: show raw market data from Kalshi."""
+    if _connector is None:
+        return {"error": "Not connected"}
+    try:
+        data = await _connector._request("GET", "/markets", params={"status": "open", "limit": 5})
+        return data
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/equity")
 async def get_equity():
     return _equity_history[-500:]
