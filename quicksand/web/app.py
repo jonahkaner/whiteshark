@@ -160,11 +160,39 @@ async def debug_markets():
     if _connector is None:
         return {"error": "Not connected"}
     try:
-        data = await _connector._request("GET", "/markets", params={
-            "status": "open",
-            "limit": 5,
+        # Fetch events to find active ones with liquidity
+        events_data = await _connector._request("GET", "/events", params={
+            "status": "open", "limit": 20,
         })
-        raw_markets = data.get("markets", [])
+        events = events_data.get("events", [])
+        event_info = [{"ticker": e.get("event_ticker", ""), "title": e.get("title", "")[:60], "category": e.get("category", "")} for e in events[:10]]
+
+        # Try fetching markets from specific popular series
+        raw_markets = []
+        for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXWEATHER", "KXGDP"]:
+            try:
+                d = await _connector._request("GET", "/markets", params={
+                    "status": "open", "limit": 10, "series_ticker": series
+                })
+                raw_markets.extend(d.get("markets", []))
+            except Exception:
+                pass
+
+        # Also try fetching from events
+        for e in events[:5]:
+            try:
+                d = await _connector._request("GET", "/markets", params={
+                    "status": "open", "limit": 10, "event_ticker": e.get("event_ticker", "")
+                })
+                raw_markets.extend(d.get("markets", []))
+            except Exception:
+                pass
+
+        if not raw_markets:
+            data = await _connector._request("GET", "/markets", params={
+                "status": "open", "limit": 5,
+            })
+            raw_markets = data.get("markets", [])
         # Show price-relevant fields for each market
         summaries = []
         for m in raw_markets:
@@ -200,6 +228,7 @@ async def debug_markets():
             "total": len(raw_markets),
             "markets": summaries,
             "orderbook_sample": orderbook,
+            "events": event_info,
         }
     except Exception as e:
         return {"error": str(e)}

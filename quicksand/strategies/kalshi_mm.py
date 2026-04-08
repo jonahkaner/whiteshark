@@ -123,19 +123,38 @@ class KalshiMarketMaker:
 
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""
-        # Paginate through markets to find ones with real quotes
         all_markets = []
-        cursor = None
-        max_pages = 5  # Up to 1000 markets
 
         try:
-            for _ in range(max_pages):
-                markets, cursor = await self.connector.get_markets_page(
-                    status="open", limit=200, cursor=cursor
-                )
-                all_markets.extend(markets)
-                if not cursor:
+            # Strategy 1: Fetch markets from active events (finds simple binary markets)
+            events = await self.connector.get_events(status="open", limit=50)
+            for event in events:
+                event_ticker = event.get("event_ticker", "")
+                # Skip multi-event cross-category markets
+                if "CROSSCATEGORY" in event_ticker or "MULTIGAME" in event_ticker:
+                    continue
+                try:
+                    event_markets = await self.connector.get_markets(
+                        status="open", limit=50, event_ticker=event_ticker
+                    )
+                    all_markets.extend(event_markets)
+                except Exception:
+                    continue
+
+                # Don't scan too many events per tick
+                if len(all_markets) >= 500:
                     break
+
+            # Strategy 2: Also try known popular series
+            for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXGDP",
+                           "KXWEATHER", "KXNBA", "KXMLB", "KXNFL", "KXMMA"]:
+                try:
+                    series_markets = await self.connector.get_markets(
+                        status="open", limit=50, series_ticker=series
+                    )
+                    all_markets.extend(series_markets)
+                except Exception:
+                    continue
 
             markets = all_markets
             log.info("scan_fetched", total_fetched=len(markets))
