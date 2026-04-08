@@ -160,33 +160,46 @@ async def debug_markets():
     if _connector is None:
         return {"error": "Not connected"}
     try:
-        # Try fetching events first to find good binary markets
-        events = await _connector._request("GET", "/events", params={"status": "open", "limit": 5})
-        # Also fetch markets filtered to binary type
-        markets = await _connector._request("GET", "/markets", params={
+        data = await _connector._request("GET", "/markets", params={
             "status": "open",
-            "limit": 10,
+            "limit": 5,
         })
-        # Find markets with actual prices
-        priced = []
-        for m in markets.get("markets", []):
-            yb = m.get("yes_bid_dollars", "0")
-            ya = m.get("yes_ask_dollars", "0")
-            if float(yb) > 0 and float(ya) > 0 and float(ya) < 1:
-                priced.append({
-                    "ticker": m.get("ticker"),
-                    "title": m.get("title", "")[:80],
-                    "yes_bid": yb,
-                    "yes_ask": ya,
-                    "volume_24h": m.get("volume_24h_fp"),
-                    "oi": m.get("open_interest_fp"),
-                    "structure": m.get("price_level_structure"),
-                })
+        raw_markets = data.get("markets", [])
+        # Show price-relevant fields for each market
+        summaries = []
+        for m in raw_markets:
+            summaries.append({
+                "ticker": m.get("ticker", "")[:60],
+                "title": (m.get("title") or m.get("no_sub_title", ""))[:60],
+                "yes_bid": m.get("yes_bid_dollars"),
+                "yes_ask": m.get("yes_ask_dollars"),
+                "no_bid": m.get("no_bid_dollars"),
+                "no_ask": m.get("no_ask_dollars"),
+                "prev_yes_bid": m.get("previous_yes_bid_dollars"),
+                "prev_yes_ask": m.get("previous_yes_ask_dollars"),
+                "volume_24h": m.get("volume_24h_fp"),
+                "oi": m.get("open_interest_fp"),
+                "bid_size": m.get("yes_bid_size_fp"),
+                "ask_size": m.get("yes_ask_size_fp"),
+                "status": m.get("status"),
+                "structure": m.get("price_level_structure"),
+            })
+
+        # Also try fetching an orderbook for the first market
+        orderbook = None
+        if raw_markets:
+            ticker = raw_markets[0].get("ticker", "")
+            try:
+                orderbook = await _connector._request(
+                    "GET", f"/markets/{ticker}/orderbook", params={"depth": 5}
+                )
+            except Exception as e:
+                orderbook = {"error": str(e)}
+
         return {
-            "total_markets": len(markets.get("markets", [])),
-            "with_prices": len(priced),
-            "samples": priced[:10],
-            "event_count": len(events.get("events", [])),
+            "total": len(raw_markets),
+            "markets": summaries,
+            "orderbook_sample": orderbook,
         }
     except Exception as e:
         return {"error": str(e)}
