@@ -124,7 +124,7 @@ class KalshiMarketMaker:
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""
         try:
-            markets = await self.connector.get_markets(status="active", limit=200)
+            markets = await self.connector.get_markets(status="open", limit=200)
         except Exception as e:
             log.warning("market_scan_failed", error=str(e))
             return
@@ -132,7 +132,7 @@ class KalshiMarketMaker:
         # Filter and rank markets
         candidates = []
         for market in markets:
-            if market.status != "active":
+            if market.status not in ("active", "open"):
                 continue
             if market.volume < self.config.min_volume:
                 continue
@@ -190,7 +190,7 @@ class KalshiMarketMaker:
             log.warning("market_fetch_failed", ticker=ticker, error=str(e))
             return
 
-        if market.status != "active":
+        if market.status not in ("active", "open"):
             return
 
         # Calculate our quote prices

@@ -241,7 +241,7 @@ class KalshiConnector:
 
     async def get_markets(
         self,
-        status: str = "active",
+        status: str = "open",
         limit: int = 100,
         cursor: str | None = None,
         event_ticker: str | None = None,
