@@ -378,7 +378,6 @@ class KalshiConnector:
             "count": count,
             "type": "limit",
             "yes_price": price if side == "yes" else (100 - price),
-            "time_in_force": time_in_force,
         }
         data = await self._request("POST", "/portfolio/orders", json=body)
         o = data.get("order", {})
@@ -398,11 +397,20 @@ class KalshiConnector:
 
     async def cancel_all_orders(self, ticker: str | None = None) -> int:
         """Cancel all resting orders, optionally filtered by ticker."""
-        params = {"ticker": ticker} if ticker else {}
-        data = await self._request("DELETE", "/portfolio/orders", params=params)
-        count = data.get("reduced_count", 0)
-        log.info("orders_cancelled", count=count, ticker=ticker)
-        return count
+        try:
+            orders = await self.get_orders(ticker=ticker, status="resting")
+            cancelled = 0
+            for order in orders:
+                try:
+                    await self.cancel_order(order.order_id)
+                    cancelled += 1
+                except Exception:
+                    pass
+            log.info("orders_cancelled", count=cancelled, ticker=ticker)
+            return cancelled
+        except Exception as e:
+            log.warning("cancel_all_failed", error=str(e))
+            return 0
 
     async def get_orders(
         self, ticker: str | None = None, status: str = "resting"
