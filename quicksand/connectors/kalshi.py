@@ -191,7 +191,7 @@ class KalshiConnector:
                 message,
                 crypto_padding.PSS(
                     mgf=crypto_padding.MGF1(hashes.SHA256()),
-                    salt_length=crypto_padding.PSS.MAX_LENGTH,
+                    salt_length=crypto_padding.PSS.DIGEST_LENGTH,
                 ),
                 hashes.SHA256(),
             )
@@ -211,6 +211,15 @@ class KalshiConnector:
         resp = await self._client.request(
             method, url, params=params, json=json, headers=headers
         )
+        if resp.status_code >= 400:
+            log.error(
+                "api_error",
+                status=resp.status_code,
+                url=url,
+                body=resp.text[:500],
+                method=method.upper(),
+                signed_path=full_path,
+            )
         resp.raise_for_status()
         return resp.json()
 
