@@ -321,7 +321,7 @@ async def start_bot():
     # Get starting balance
     if not _config.is_paper and kalshi_cfg.private_key_path:
         try:
-            _initial_balance = await _connector.get_balance()
+            _initial_balance = await _connector.get_portfolio_value()
         except Exception:
             _initial_balance = 10000  # Fallback
     else:
