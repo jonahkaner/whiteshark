@@ -191,7 +191,7 @@ class KalshiConnector:
                 message,
                 crypto_padding.PSS(
                     mgf=crypto_padding.MGF1(hashes.SHA256()),
-                    salt_length=crypto_padding.PSS.DIGEST_LENGTH,
+                    salt_length=crypto_padding.PSS.MAX_LENGTH,
                 ),
                 hashes.SHA256(),
             )
