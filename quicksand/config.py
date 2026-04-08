@@ -54,12 +54,14 @@ class KalshiMMConfig(BaseModel):
     enabled: bool = True
     min_spread_cents: int = 3
     quote_spread_cents: int = 2
-    max_position_per_market: int = 100
-    max_total_exposure: float = 2500
-    max_markets: int = 8
-    min_volume: int = 50
-    min_open_interest: int = 20
-    requote_interval_seconds: int = 60
+    max_position_per_market: int = 200
+    max_total_exposure: float = 5000
+    max_markets: int = 15
+    min_volume: int = 0
+    min_open_interest: int = 0
+    requote_interval_seconds: int = 45
+    max_expiry_days: int = 7
+    order_size: int = 50
 
 
 class StrategiesConfig(BaseModel):

@@ -350,6 +350,8 @@ async def start_bot():
             min_volume=mm_cfg.min_volume,
             min_open_interest=mm_cfg.min_open_interest,
             requote_interval_seconds=mm_cfg.requote_interval_seconds,
+            max_expiry_days=getattr(mm_cfg, 'max_expiry_days', 7),
+            order_size=getattr(mm_cfg, 'order_size', 50),
         ),
         paper_mode=_config.is_paper,
     )

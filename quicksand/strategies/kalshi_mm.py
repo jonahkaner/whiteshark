@@ -16,7 +16,7 @@ Example:
 - YES bid: 55¢, YES ask: 60¢ (spread = 5¢)
 - We place: Buy YES at 56¢, Sell YES at 59¢ (our spread = 3¢)
 - If both sides fill on 100 contracts: 100 × $0.03 = $3.00 profit
-- Scale across 20+ markets simultaneously
+- Scale across 15+ markets simultaneously
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from quicksand.connectors.kalshi import KalshiConnector, KalshiMarket, KalshiOrder
 from quicksand.utils.logging import get_logger
@@ -37,13 +38,15 @@ class MarketMakingConfig:
 
     min_spread_cents: int = 3  # Minimum spread to quote (in cents)
     quote_spread_cents: int = 2  # How wide our quotes are inside the spread
-    max_position_per_market: int = 100  # Max contracts per market
-    max_total_exposure: float = 2500  # Max total $ deployed across all markets
-    max_markets: int = 8  # Max simultaneous markets to make (keep low for rate limits)
-    min_volume: int = 50  # Minimum 24h volume to consider a market
-    min_open_interest: int = 20  # Minimum open interest
-    requote_interval_seconds: int = 60  # How often to check and re-quote
+    max_position_per_market: int = 200  # Max contracts per market
+    max_total_exposure: float = 5000  # Max total $ deployed across all markets
+    max_markets: int = 15  # Max simultaneous markets to make
+    min_volume: int = 0  # Minimum 24h volume (0 = no filter)
+    min_open_interest: int = 0  # Minimum open interest (0 = no filter)
+    requote_interval_seconds: int = 45  # How often to check and re-quote
     inventory_skew: float = 0.3  # Skew quotes when inventory is one-sided
+    max_expiry_days: int = 7  # Prefer markets expiring within this many days
+    order_size: int = 50  # Contracts per order
 
 
 @dataclass
@@ -54,7 +57,7 @@ class MarketQuote:
     title: str
     bid_order: KalshiOrder | None = None  # Our buy YES order
     ask_order: KalshiOrder | None = None  # Our sell YES (buy NO) order
-    yes_inventory: int = 0  # Net YES contracts held
+    yes_inventory: int = 0  # Net YES contracts held (from Kalshi positions)
     total_filled: int = 0  # Total contracts filled (both sides)
     total_pnl: float = 0  # Realized P&L from completed round trips
     last_update: float = 0
@@ -85,15 +88,57 @@ class KalshiMarketMaker:
         self._paper_balance = 0.0
         self._paper_positions: dict[str, int] = {}  # ticker -> net position
         self._processed_fills: set[str] = set()  # Fill IDs already counted
+        self._known_positions: dict[str, int] = {}  # ticker -> position from Kalshi
 
     @property
     def name(self) -> str:
         return "kalshi_mm"
 
     async def initialize(self, starting_balance: float) -> None:
-        """Initialize with starting capital."""
+        """Initialize with starting capital and load existing positions."""
         self._paper_balance = starting_balance
+
+        # Load existing positions from Kalshi on startup
+        if not self.paper_mode:
+            await self._load_existing_positions()
+
         log.info("kalshi_mm_initialized", balance=starting_balance, paper=self.paper_mode)
+
+    async def _load_existing_positions(self) -> None:
+        """Load existing positions from Kalshi to prevent over-accumulation."""
+        try:
+            positions = await self.connector.get_positions()
+            for pos in positions:
+                if pos.count > 0:
+                    inventory = pos.count if pos.side == "yes" else -pos.count
+                    self._known_positions[pos.ticker] = inventory
+                    log.info(
+                        "existing_position_loaded",
+                        ticker=pos.ticker,
+                        side=pos.side,
+                        count=pos.count,
+                        inventory=inventory,
+                    )
+            log.info("positions_loaded", count=len(self._known_positions))
+        except Exception as e:
+            log.warning("load_positions_failed", error=str(e))
+
+    async def _sync_positions(self) -> None:
+        """Periodically sync positions from Kalshi to stay accurate."""
+        try:
+            positions = await self.connector.get_positions()
+            new_positions = {}
+            for pos in positions:
+                if pos.count > 0:
+                    inventory = pos.count if pos.side == "yes" else -pos.count
+                    new_positions[pos.ticker] = inventory
+            self._known_positions = new_positions
+
+            # Update active quotes with real inventory
+            for ticker, quote in self.active_quotes.items():
+                quote.yes_inventory = self._known_positions.get(ticker, 0)
+        except Exception as e:
+            log.warning("sync_positions_failed", error=str(e))
 
     async def on_tick(self) -> None:
         """Main tick: scan markets, update quotes, manage inventory."""
@@ -103,9 +148,9 @@ class KalshiMarketMaker:
             return
         self._last_scan = now
 
-        # 1. Check fills on existing orders (live mode only)
+        # 1. Sync positions from Kalshi (live mode only)
         if not self.paper_mode:
-            await self._check_fills()
+            await self._sync_positions()
 
         # 2. Scan for good markets to make
         await self._scan_markets()
@@ -114,25 +159,39 @@ class KalshiMarketMaker:
         await self._update_quotes()
 
         # 4. Log status
-        total_exposure = sum(
-            abs(q.yes_inventory) * 0.50  # Rough avg price per contract
-            for q in self.active_quotes.values()
+        total_inventory = sum(
+            abs(q.yes_inventory) for q in self.active_quotes.values()
         )
         log.info(
             "mm_tick",
             active_markets=len(self.active_quotes),
             total_pnl=round(self._total_pnl, 2),
             total_trades=self._total_trades,
-            total_exposure=round(total_exposure, 2),
+            total_inventory=total_inventory,
         )
+
+    def _days_until_expiry(self, market: KalshiMarket) -> float:
+        """Calculate days until market expires. Returns 999 if unknown."""
+        if not market.expiration_time:
+            return 999
+        try:
+            # Parse ISO format expiration time
+            exp_str = market.expiration_time.replace("Z", "+00:00")
+            exp_time = datetime.fromisoformat(exp_str)
+            now = datetime.now(timezone.utc)
+            delta = (exp_time - now).total_seconds() / 86400
+            return max(0, delta)
+        except (ValueError, TypeError):
+            return 999
 
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""
         all_markets = []
 
         try:
-            # Focus on liquid series with known spreads (fewer API calls)
-            for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXGDP"]:
+            # Scan liquid series
+            for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXGDP",
+                           "KXNBA", "KXMLB", "KXNFL", "KXWEATHER"]:
                 try:
                     series_markets = await self.connector.get_markets(
                         status="open", limit=30, series_ticker=series
@@ -141,7 +200,7 @@ class KalshiMarketMaker:
                 except Exception:
                     continue
 
-            # Also scan a few top events (limit to reduce API calls)
+            # Also scan top events
             events = await self.connector.get_events(status="open", limit=10)
             events_scanned = 0
             for event in events:
@@ -159,39 +218,26 @@ class KalshiMarketMaker:
                 if events_scanned >= 5:
                     break
 
-            markets = all_markets
+            # Deduplicate by ticker
+            seen = set()
+            markets = []
+            for m in all_markets:
+                if m.ticker not in seen:
+                    seen.add(m.ticker)
+                    markets.append(m)
+
             log.info("scan_fetched", total_fetched=len(markets))
         except Exception as e:
             log.warning("market_scan_failed", error=str(e))
             return
 
-        # Debug: log first few markets to see what we're getting
-        if markets:
-            sample = markets[:3]
-            for m in sample:
-                log.info(
-                    "market_sample",
-                    ticker=m.ticker,
-                    title=m.title[:40] if m.title else "",
-                    yes_bid=m.yes_bid,
-                    yes_ask=m.yes_ask,
-                    spread=m.spread,
-                    volume=m.volume,
-                    oi=m.open_interest,
-                    mid=m.mid_price,
-                    status=m.status,
-                )
-        else:
-            log.warning("no_markets_returned")
-
         # Filter and rank markets
         candidates = []
-        skipped = {"status": 0, "no_spread": 0, "extreme": 0, "no_prices": 0}
+        skipped = {"status": 0, "no_spread": 0, "extreme": 0, "no_prices": 0, "too_far": 0}
         for market in markets:
             if market.status not in ("active", "open"):
                 skipped["status"] += 1
                 continue
-            # Must have actual prices on both sides
             if market.yes_bid <= 0 or market.yes_ask <= 0:
                 skipped["no_prices"] += 1
                 continue
@@ -199,25 +245,37 @@ class KalshiMarketMaker:
                 skipped["no_spread"] += 1
                 continue
             # Skip extreme prices (too close to 0 or 100)
-            if market.mid_price < 10 or market.mid_price > 90:
+            if market.mid_price < 5 or market.mid_price > 95:
                 skipped["extreme"] += 1
+                continue
+            # Prefer markets expiring soon
+            days = self._days_until_expiry(market)
+            if days > self.config.max_expiry_days:
+                skipped["too_far"] += 1
                 continue
 
             candidates.append(market)
 
         log.info("filter_stats", **skipped)
-
         log.info("scan_results", total=len(markets), candidates=len(candidates))
 
-        # Rank by spread × volume (best opportunities first)
-        candidates.sort(key=lambda m: m.spread * m.volume, reverse=True)
+        # Rank: prefer wider spreads, higher volume, and sooner expiry
+        def score(m: KalshiMarket) -> float:
+            days = max(0.1, self._days_until_expiry(m))
+            # Spread value * volume, boosted for near-term expiry
+            expiry_boost = 7.0 / days  # 7x boost for same-day vs 7-day
+            return m.spread * max(m.volume, 1) * expiry_boost
+
+        candidates.sort(key=score, reverse=True)
 
         # Add new markets up to our limit
         for market in candidates[:self.config.max_markets]:
             if market.ticker not in self.active_quotes:
+                initial_inventory = self._known_positions.get(market.ticker, 0)
                 self.active_quotes[market.ticker] = MarketQuote(
                     ticker=market.ticker,
                     title=market.title,
+                    yes_inventory=initial_inventory,
                 )
                 log.info(
                     "market_added",
@@ -225,6 +283,8 @@ class KalshiMarketMaker:
                     title=market.title[:60],
                     spread=market.spread,
                     volume=market.volume,
+                    expiry_days=round(self._days_until_expiry(market), 1),
+                    existing_inventory=initial_inventory,
                 )
 
         # Remove markets that are no longer attractive
@@ -259,14 +319,18 @@ class KalshiMarketMaker:
         if market.status not in ("active", "open"):
             return
 
+        # Use real inventory from Kalshi positions
+        real_inventory = self._known_positions.get(ticker, 0)
+        quote.yes_inventory = real_inventory
+
         # Calculate our quote prices
         mid = market.mid_price
         half_spread = self.config.quote_spread_cents / 2
 
         # Inventory skew: if we're long YES, lower our bid and raise our ask
         skew = 0
-        if abs(quote.yes_inventory) > 0:
-            inventory_ratio = quote.yes_inventory / self.config.max_position_per_market
+        if abs(real_inventory) > 0:
+            inventory_ratio = real_inventory / self.config.max_position_per_market
             skew = int(inventory_ratio * self.config.inventory_skew * 10)
 
         our_bid = int(mid - half_spread - skew)  # Buy YES price
@@ -276,10 +340,10 @@ class KalshiMarketMaker:
         our_bid = max(1, min(98, our_bid))
         our_ask = max(our_bid + 1, min(99, our_ask))
 
-        # Check position limits
-        if abs(quote.yes_inventory) >= self.config.max_position_per_market:
+        # Check position limits using REAL inventory
+        if abs(real_inventory) >= self.config.max_position_per_market:
             # Only quote the reducing side
-            if quote.yes_inventory > 0:
+            if real_inventory > 0:
                 our_bid = 0  # Don't buy more YES
             else:
                 our_ask = 0  # Don't sell more YES
@@ -303,16 +367,11 @@ class KalshiMarketMaker:
         bid_price: int,
         ask_price: int,
     ) -> None:
-        """Simulate market making in paper mode.
-
-        Simple simulation: if our bid >= market's yes_bid or our ask <= market's yes_ask,
-        assume we'd get filled at a rate proportional to volume.
-        """
+        """Simulate market making in paper mode."""
         contracts_per_fill = min(10, self.config.max_position_per_market // 10)
 
         # Simulate bid fill (we buy YES)
         if bid_price > 0 and bid_price >= market.yes_bid and market.volume > 0:
-            # Probability of fill based on how aggressive our price is
             fill_chance = min(0.3, (bid_price - market.yes_bid + 1) * 0.1)
             import random
             if random.random() < fill_chance:
@@ -335,9 +394,6 @@ class KalshiMarketMaker:
 
         # Calculate realized P&L from round trips
         if quote.total_filled > 0:
-            # Approximate: each round trip captures the spread
-            round_trips = quote.total_filled // 2
-            spread_profit = round_trips * self.config.quote_spread_cents / 100
             self._total_pnl = sum(
                 q.total_filled // 2 * self.config.quote_spread_cents / 100
                 for q in self.active_quotes.values()
@@ -351,15 +407,13 @@ class KalshiMarketMaker:
         log.info(
             "live_quote_start",
             ticker=ticker, bid_price=bid_price, ask_price=ask_price,
+            inventory=quote.yes_inventory,
         )
 
         # Cancel existing orders for this market
         await self._cancel_quotes(ticker)
 
-        contracts = min(
-            self.config.max_position_per_market // 4,
-            50,  # Conservative per-order size
-        )
+        contracts = self.config.order_size
 
         # Place bid order (buy YES)
         if bid_price > 0:
@@ -389,57 +443,6 @@ class KalshiMarketMaker:
                 log.info("ask_placed", ticker=ticker, ask_price=ask_price, no_price=no_price, contracts=contracts)
             except Exception as e:
                 log.warning("ask_failed", ticker=ticker, ask_price=ask_price, error=str(e))
-
-    async def _check_fills(self) -> None:
-        """Check if any of our resting orders have been filled."""
-        try:
-            fills = await self.connector.get_fills(limit=50)
-        except Exception as e:
-            log.warning("fill_check_failed", error=str(e))
-            return
-
-        for fill in fills:
-            ticker = fill.get("ticker", "")
-            quote = self.active_quotes.get(ticker)
-            if not quote:
-                continue
-
-            side = fill.get("side", "")
-            action = fill.get("action", "")
-            count = fill.get("count", 0)
-
-            # Parse fill price (dollar string or cents)
-            price_str = fill.get("yes_price_dollars", "")
-            if price_str:
-                try:
-                    fill_price_cents = float(price_str) * 100
-                except (ValueError, TypeError):
-                    fill_price_cents = fill.get("yes_price", 0)
-            else:
-                fill_price_cents = fill.get("yes_price", 0)
-
-            fill_id = fill.get("trade_id", fill.get("fill_id", ""))
-            if not fill_id or fill_id in self._processed_fills:
-                continue
-            self._processed_fills.add(fill_id)
-
-            if side == "yes" and action == "buy":
-                quote.yes_inventory += count
-                quote.total_filled += count
-                cost = count * fill_price_cents / 100
-                log.info("fill_yes_buy", ticker=ticker, count=count, price=fill_price_cents, cost=cost)
-            elif side == "no" and action == "buy":
-                quote.yes_inventory -= count
-                quote.total_filled += count
-                revenue = count * (100 - fill_price_cents) / 100
-                log.info("fill_no_buy", ticker=ticker, count=count, price=fill_price_cents, revenue=revenue)
-
-        # Recalculate totals
-        self._total_trades = sum(q.total_filled for q in self.active_quotes.values())
-        self._total_pnl = sum(
-            q.total_filled // 2 * self.config.quote_spread_cents / 100
-            for q in self.active_quotes.values()
-        )
 
     async def _cancel_quotes(self, ticker: str) -> None:
         """Cancel all our orders in a market."""
