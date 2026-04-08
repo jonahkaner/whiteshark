@@ -150,20 +150,26 @@ class KalshiMarketMaker:
 
         # Filter and rank markets
         candidates = []
+        skipped = {"status": 0, "no_spread": 0, "extreme": 0, "no_prices": 0}
         for market in markets:
             if market.status not in ("active", "open"):
+                skipped["status"] += 1
                 continue
-            if market.volume < self.config.min_volume:
-                continue
-            if market.open_interest < self.config.min_open_interest:
+            # Must have actual prices on both sides
+            if market.yes_bid <= 0 or market.yes_ask <= 0:
+                skipped["no_prices"] += 1
                 continue
             if market.spread < self.config.min_spread_cents:
+                skipped["no_spread"] += 1
                 continue
             # Skip extreme prices (too close to 0 or 100)
             if market.mid_price < 10 or market.mid_price > 90:
+                skipped["extreme"] += 1
                 continue
 
             candidates.append(market)
+
+        log.info("filter_stats", **skipped)
 
         log.info("scan_results", total=len(markets), candidates=len(candidates))
 

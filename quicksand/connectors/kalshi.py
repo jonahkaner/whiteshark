@@ -220,17 +220,69 @@ class KalshiConnector:
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     def _parse_market(self, m: dict) -> KalshiMarket:
+        # Kalshi API now returns dollar-denominated string fields.
+        # Convert to cents (int) for internal use.
+        def to_cents(val) -> float:
+            """Convert dollar string or cent int to cents."""
+            if isinstance(val, str):
+                try:
+                    return float(val) * 100
+                except ValueError:
+                    return 0
+            if isinstance(val, (int, float)):
+                # Legacy cent format or already numeric
+                return float(val) if val > 1 else val * 100
+            return 0
+
+        # Try new dollar fields, fall back to legacy cent fields
+        yes_bid = to_cents(m.get("yes_bid_dollars") or m.get("previous_yes_bid_dollars") or m.get("yes_bid", 0))
+        yes_ask = to_cents(m.get("yes_ask_dollars") or m.get("previous_yes_ask_dollars") or m.get("yes_ask", 0))
+        no_bid = to_cents(m.get("no_bid_dollars") or m.get("no_bid", 0))
+        no_ask = to_cents(m.get("no_ask_dollars") or m.get("no_ask", 0))
+        last_price = to_cents(m.get("last_price_dollars") or m.get("last_price", 0))
+
+        # If yes prices are 0, derive from no prices (YES bid = 100 - NO ask)
+        if yes_bid == 0 and no_ask > 0:
+            yes_bid = 100 - no_ask
+        if yes_ask == 0 and no_bid > 0:
+            yes_ask = 100 - no_bid
+
+        # Volume: try fp fields first, then legacy
+        volume_raw = m.get("volume_24h_fp") or m.get("volume_fp") or m.get("volume", 0)
+        if isinstance(volume_raw, str):
+            try:
+                volume = int(float(volume_raw))
+            except ValueError:
+                volume = 0
+        else:
+            volume = int(volume_raw) if volume_raw else 0
+        # Use yes_bid_size as activity proxy if volume is 0
+        if volume == 0:
+            bid_size = m.get("yes_bid_size_fp", "0")
+            try:
+                volume = int(float(bid_size))
+            except (ValueError, TypeError):
+                volume = 0
+
+        # Open interest
+        oi = m.get("open_interest", 0) or m.get("open_interest_fp", "0")
+        if isinstance(oi, str):
+            try:
+                oi = int(float(oi))
+            except ValueError:
+                oi = 0
+
         return KalshiMarket(
             ticker=m.get("ticker", ""),
             event_ticker=m.get("event_ticker", ""),
-            title=m.get("title", ""),
-            yes_bid=m.get("yes_bid", 0),
-            yes_ask=m.get("yes_ask", 0),
-            no_bid=m.get("no_bid", 0),
-            no_ask=m.get("no_ask", 0),
-            last_price=m.get("last_price", 0),
-            volume=m.get("volume", 0),
-            open_interest=m.get("open_interest", 0),
+            title=m.get("title", m.get("no_sub_title", "")),
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid if no_bid else (100 - yes_ask if yes_ask else 0),
+            no_ask=no_ask if no_ask else (100 - yes_bid if yes_bid else 0),
+            last_price=last_price,
+            volume=volume,
+            open_interest=oi,
             status=m.get("status", ""),
             result=m.get("result"),
             expiration_time=m.get("expiration_time", ""),
