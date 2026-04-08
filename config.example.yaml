@@ -7,7 +7,7 @@ mode: paper  # paper | live
 # This is the primary strategy. Create an account at kalshi.com
 kalshi:
   api_key_id: ${KALSHI_API_KEY_ID}  # API Key ID from Kalshi settings
-  private_key_path: ""              # Path to .pem private key file from Kalshi
+  private_key_path: "keys/kalshi.pem"  # Path to .pem private key file from Kalshi
   demo: true                        # true = demo account (play money), false = real
 
 # ── Kalshi Market Making Strategy ──────────────────────────────────────
