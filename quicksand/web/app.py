@@ -234,6 +234,22 @@ async def debug_markets():
         return {"error": str(e)}
 
 
+@app.get("/api/debug/portfolio")
+async def debug_portfolio():
+    """Debug: show raw balance and positions data from Kalshi API."""
+    if _connector is None:
+        return {"error": "Not connected"}
+    try:
+        balance_raw = await _connector._request("GET", "/portfolio/balance")
+        positions_raw = await _connector._request("GET", "/portfolio/positions")
+        return {
+            "balance_raw": balance_raw,
+            "positions_raw": positions_raw,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/debug/orders")
 async def debug_orders():
     """Debug: show resting orders and recent fills from Kalshi."""
