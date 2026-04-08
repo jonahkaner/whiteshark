@@ -84,6 +84,7 @@ class KalshiMarketMaker:
         # Paper mode tracking
         self._paper_balance = 0.0
         self._paper_positions: dict[str, int] = {}  # ticker -> net position
+        self._processed_fills: set[str] = set()  # Fill IDs already counted
 
     @property
     def name(self) -> str:
@@ -102,13 +103,17 @@ class KalshiMarketMaker:
             return
         self._last_scan = now
 
-        # 1. Scan for good markets to make
+        # 1. Check fills on existing orders (live mode only)
+        if not self.paper_mode:
+            await self._check_fills()
+
+        # 2. Scan for good markets to make
         await self._scan_markets()
 
-        # 2. Update existing quotes
+        # 3. Update existing quotes
         await self._update_quotes()
 
-        # 3. Log status
+        # 4. Log status
         total_exposure = sum(
             abs(q.yes_inventory) * 0.50  # Rough avg price per contract
             for q in self.active_quotes.values()
@@ -240,7 +245,10 @@ class KalshiMarketMaker:
             self._quote_market(ticker, quote)
             for ticker, quote in self.active_quotes.items()
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for ticker, result in zip(self.active_quotes.keys(), results):
+            if isinstance(result, Exception):
+                log.error("quote_update_exception", ticker=ticker, error=str(result))
 
     async def _quote_market(self, ticker: str, quote: MarketQuote) -> None:
         """Place or update quotes in a single market."""
@@ -282,7 +290,10 @@ class KalshiMarketMaker:
         if self.paper_mode:
             await self._paper_quote(ticker, quote, market, our_bid, our_ask)
         else:
-            await self._live_quote(ticker, quote, our_bid, our_ask)
+            try:
+                await self._live_quote(ticker, quote, our_bid, our_ask)
+            except Exception as e:
+                log.error("live_quote_error", ticker=ticker, error=str(e))
 
         quote.last_update = time.time()
 
@@ -339,6 +350,11 @@ class KalshiMarketMaker:
         self, ticker: str, quote: MarketQuote, bid_price: int, ask_price: int
     ) -> None:
         """Place real orders on Kalshi."""
+        log.info(
+            "live_quote_start",
+            ticker=ticker, bid_price=bid_price, ask_price=ask_price,
+        )
+
         # Cancel existing orders for this market
         await self._cancel_quotes(ticker)
 
@@ -347,8 +363,9 @@ class KalshiMarketMaker:
             50,  # Conservative per-order size
         )
 
-        try:
-            if bid_price > 0:
+        # Place bid order (buy YES)
+        if bid_price > 0:
+            try:
                 quote.bid_order = await self.connector.place_order(
                     ticker=ticker,
                     side="yes",
@@ -356,17 +373,75 @@ class KalshiMarketMaker:
                     count=contracts,
                     price=bid_price,
                 )
+                log.info("bid_placed", ticker=ticker, price=bid_price, contracts=contracts)
+            except Exception as e:
+                log.warning("bid_failed", ticker=ticker, price=bid_price, error=str(e))
 
-            if ask_price > 0:
+        # Place ask order (sell YES = buy NO)
+        if ask_price > 0:
+            try:
+                no_price = 100 - ask_price
                 quote.ask_order = await self.connector.place_order(
                     ticker=ticker,
                     side="no",
                     action="buy",
                     count=contracts,
-                    price=100 - ask_price,  # Buying NO at (100 - ask) = selling YES at ask
+                    price=no_price,
                 )
+                log.info("ask_placed", ticker=ticker, ask_price=ask_price, no_price=no_price, contracts=contracts)
+            except Exception as e:
+                log.warning("ask_failed", ticker=ticker, ask_price=ask_price, error=str(e))
+
+    async def _check_fills(self) -> None:
+        """Check if any of our resting orders have been filled."""
+        try:
+            fills = await self.connector.get_fills(limit=50)
         except Exception as e:
-            log.warning("quote_failed", ticker=ticker, error=str(e))
+            log.warning("fill_check_failed", error=str(e))
+            return
+
+        for fill in fills:
+            ticker = fill.get("ticker", "")
+            quote = self.active_quotes.get(ticker)
+            if not quote:
+                continue
+
+            side = fill.get("side", "")
+            action = fill.get("action", "")
+            count = fill.get("count", 0)
+
+            # Parse fill price (dollar string or cents)
+            price_str = fill.get("yes_price_dollars", "")
+            if price_str:
+                try:
+                    fill_price_cents = float(price_str) * 100
+                except (ValueError, TypeError):
+                    fill_price_cents = fill.get("yes_price", 0)
+            else:
+                fill_price_cents = fill.get("yes_price", 0)
+
+            fill_id = fill.get("trade_id", fill.get("fill_id", ""))
+            if not fill_id or fill_id in self._processed_fills:
+                continue
+            self._processed_fills.add(fill_id)
+
+            if side == "yes" and action == "buy":
+                quote.yes_inventory += count
+                quote.total_filled += count
+                cost = count * fill_price_cents / 100
+                log.info("fill_yes_buy", ticker=ticker, count=count, price=fill_price_cents, cost=cost)
+            elif side == "no" and action == "buy":
+                quote.yes_inventory -= count
+                quote.total_filled += count
+                revenue = count * (100 - fill_price_cents) / 100
+                log.info("fill_no_buy", ticker=ticker, count=count, price=fill_price_cents, revenue=revenue)
+
+        # Recalculate totals
+        self._total_trades = sum(q.total_filled for q in self.active_quotes.values())
+        self._total_pnl = sum(
+            q.total_filled // 2 * self.config.quote_spread_cents / 100
+            for q in self.active_quotes.values()
+        )
 
     async def _cancel_quotes(self, ticker: str) -> None:
         """Cancel all our orders in a market."""

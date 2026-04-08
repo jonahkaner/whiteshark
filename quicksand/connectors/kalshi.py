@@ -371,17 +371,25 @@ class KalshiConnector:
             price: Price in cents (1-99)
             time_in_force: "gtc" (good til canceled) or "ioc" (immediate or cancel)
         """
+        yes_price_cents = price if side == "yes" else (100 - price)
+        yes_price_dollars = f"{yes_price_cents / 100:.2f}"
         body = {
             "ticker": ticker,
             "side": side,
             "action": action,
             "count": count,
             "type": "limit",
-            "yes_price": price if side == "yes" else (100 - price),
+            "yes_price_dollars": yes_price_dollars,
         }
+        log.info(
+            "placing_order",
+            ticker=ticker, side=side, action=action,
+            count=count, yes_price_dollars=yes_price_dollars,
+            yes_price_cents=yes_price_cents,
+        )
         data = await self._request("POST", "/portfolio/orders", json=body)
         o = data.get("order", {})
-        return KalshiOrder(
+        order = KalshiOrder(
             order_id=o.get("order_id", ""),
             ticker=ticker, side=side, action=action,
             count=count, price=price,
@@ -389,6 +397,13 @@ class KalshiConnector:
             filled_count=o.get("filled_count", 0),
             created_time=o.get("created_time", ""),
         )
+        log.info(
+            "order_placed",
+            order_id=order.order_id,
+            ticker=ticker, side=side, status=order.status,
+            yes_price_dollars=yes_price_dollars,
+        )
+        return order
 
     async def cancel_order(self, order_id: str) -> None:
         """Cancel a resting order."""
@@ -420,27 +435,43 @@ class KalshiConnector:
         if ticker:
             params["ticker"] = ticker
         data = await self._request("GET", "/portfolio/orders", params=params)
-        return [
-            KalshiOrder(
+        orders = []
+        for o in data.get("orders", []):
+            # Parse price: try dollar string first, fall back to cents int
+            price_dollars = o.get("yes_price_dollars", "")
+            if price_dollars:
+                try:
+                    price_cents = int(float(price_dollars) * 100)
+                except (ValueError, TypeError):
+                    price_cents = o.get("yes_price", 0)
+            else:
+                price_cents = o.get("yes_price", 0)
+            orders.append(KalshiOrder(
                 order_id=o.get("order_id", ""),
                 ticker=o.get("ticker", ""),
                 side=o.get("side", ""),
                 action=o.get("action", ""),
                 count=o.get("count", 0),
-                price=o.get("yes_price", 0),
+                price=price_cents,
                 status=o.get("status", ""),
                 filled_count=o.get("filled_count", 0),
                 created_time=o.get("created_time", ""),
-            )
-            for o in data.get("orders", [])
-        ]
+            ))
+        return orders
 
     # ── Portfolio ──────────────────────────────────────────────────────────
 
     async def get_balance(self) -> float:
         """Get account balance in dollars."""
         data = await self._request("GET", "/portfolio/balance")
-        return data.get("balance", 0) / 100  # Balance is in cents
+        # Try dollar string field first, fall back to cents integer
+        balance_dollars = data.get("balance_dollars")
+        if balance_dollars is not None:
+            try:
+                return float(balance_dollars)
+            except (ValueError, TypeError):
+                pass
+        return data.get("balance", 0) / 100  # Legacy: balance in cents
 
     async def get_positions(self) -> list[KalshiPosition]:
         """Get all open positions."""

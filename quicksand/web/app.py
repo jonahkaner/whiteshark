@@ -234,6 +234,43 @@ async def debug_markets():
         return {"error": str(e)}
 
 
+@app.get("/api/debug/orders")
+async def debug_orders():
+    """Debug: show resting orders and recent fills from Kalshi."""
+    if _connector is None:
+        return {"error": "Not connected"}
+    try:
+        orders = await _connector.get_orders(status="resting")
+        fills = await _connector.get_fills(limit=20)
+        return {
+            "resting_orders": [
+                {
+                    "order_id": o.order_id,
+                    "ticker": o.ticker,
+                    "side": o.side,
+                    "action": o.action,
+                    "count": o.count,
+                    "price": o.price,
+                    "status": o.status,
+                    "filled": o.filled_count,
+                }
+                for o in orders
+            ],
+            "recent_fills": fills[:20],
+            "active_quotes": {
+                ticker: {
+                    "bid_order": q.bid_order.order_id if q.bid_order else None,
+                    "ask_order": q.ask_order.order_id if q.ask_order else None,
+                    "inventory": q.yes_inventory,
+                    "total_filled": q.total_filled,
+                }
+                for ticker, q in (_mm.active_quotes if _mm else {}).items()
+            },
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/equity")
 async def get_equity():
     return _equity_history[-500:]
