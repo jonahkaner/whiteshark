@@ -81,12 +81,19 @@ async def get_status():
             "uptime": 0,
         }
 
-    # Get total portfolio value (cash + positions)
+    # Get portfolio breakdown with realized/unrealized P&L
+    realized_pnl = 0.0
+    unrealized_pnl = 0.0
+    total_fees = 0.0
     if _config.is_paper:
         equity = _mm._paper_balance
     else:
         try:
-            equity = await _connector.get_portfolio_value()
+            summary = await _connector.get_portfolio_summary()
+            equity = summary["total"]
+            realized_pnl = summary["realized_pnl"]
+            total_fees = summary["total_fees"]
+            unrealized_pnl = (equity - _initial_balance) - realized_pnl
         except Exception:
             equity = _initial_balance + _mm._total_pnl
 
@@ -102,6 +109,9 @@ async def get_status():
         "daily_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 3),
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 2),
+        "realized_pnl": round(realized_pnl, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "total_fees": round(total_fees, 2),
         "positions": len(_mm.active_quotes),
         "utilization_pct": round(len(_mm.active_quotes) / max(_mm.config.max_markets, 1) * 100, 1),
         "drawdown_pct": 0,

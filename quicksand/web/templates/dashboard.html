@@ -163,16 +163,26 @@
         <div class="balance-amount" id="balance">$0.00</div>
         <div class="pnl-row">
             <div class="pnl-item">
-                <div class="pnl-label">Today</div>
-                <div class="pnl-value neutral" id="daily-pnl">$0.00</div>
-            </div>
-            <div class="pnl-item">
                 <div class="pnl-label">Total P&L</div>
                 <div class="pnl-value neutral" id="total-pnl">$0.00</div>
             </div>
             <div class="pnl-item">
                 <div class="pnl-label">Return</div>
                 <div class="pnl-value neutral" id="total-return">0.00%</div>
+            </div>
+        </div>
+        <div class="pnl-row" style="margin-top: 8px;">
+            <div class="pnl-item">
+                <div class="pnl-label">Realized</div>
+                <div class="pnl-value neutral" id="realized-pnl">$0.00</div>
+            </div>
+            <div class="pnl-item">
+                <div class="pnl-label">Unrealized</div>
+                <div class="pnl-value neutral" id="unrealized-pnl">$0.00</div>
+            </div>
+            <div class="pnl-item">
+                <div class="pnl-label">Fees</div>
+                <div class="pnl-value neutral" id="total-fees">$0.00</div>
             </div>
         </div>
     </div>
@@ -277,6 +287,18 @@
                 const returnEl = document.getElementById('total-return');
                 returnEl.textContent = fmtPct(s.total_pnl_pct || 0);
                 returnEl.className = 'pnl-value ' + pnlClass(s.total_pnl_pct || 0);
+
+                const realizedEl = document.getElementById('realized-pnl');
+                realizedEl.textContent = fmtSigned(s.realized_pnl || 0);
+                realizedEl.className = 'pnl-value ' + pnlClass(s.realized_pnl || 0);
+
+                const unrealizedEl = document.getElementById('unrealized-pnl');
+                unrealizedEl.textContent = fmtSigned(s.unrealized_pnl || 0);
+                unrealizedEl.className = 'pnl-value ' + pnlClass(s.unrealized_pnl || 0);
+
+                const feesEl = document.getElementById('total-fees');
+                feesEl.textContent = '-$' + Math.abs(s.total_fees || 0).toFixed(2);
+                feesEl.className = 'pnl-value ' + (s.total_fees > 0 ? 'negative' : 'neutral');
 
                 document.getElementById('positions').textContent = s.positions;
                 document.getElementById('utilization').textContent = (s.utilization_pct || 0) + '%';

@@ -558,8 +558,38 @@ class KalshiConnector:
         cash = data.get("balance", 0) / 100
         positions = data.get("portfolio_value", 0) / 100
         total = cash + positions
-        log.info("portfolio_value", cash=round(cash, 2), positions=round(positions, 2), total=round(total, 2))
         return total
+
+    async def get_portfolio_summary(self) -> dict:
+        """Get portfolio value breakdown with realized/unrealized P&L."""
+        balance_data = await self._request("GET", "/portfolio/balance")
+        cash = balance_data.get("balance", 0) / 100
+        position_value = balance_data.get("portfolio_value", 0) / 100
+        total = cash + position_value
+
+        # Sum realized P&L and fees from positions
+        positions_data = await self._request("GET", "/portfolio/positions")
+        realized_pnl = 0.0
+        total_fees = 0.0
+        for p in positions_data.get("event_positions", []):
+            rpnl = p.get("realized_pnl_dollars", "0")
+            fees = p.get("fees_paid_dollars", "0")
+            try:
+                realized_pnl += float(rpnl)
+            except (ValueError, TypeError):
+                pass
+            try:
+                total_fees += float(fees)
+            except (ValueError, TypeError):
+                pass
+
+        return {
+            "cash": round(cash, 2),
+            "position_value": round(position_value, 2),
+            "total": round(total, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "total_fees": round(total_fees, 2),
+        }
 
     async def get_fills(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         """Get recent fills (executed trades)."""
