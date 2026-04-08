@@ -123,8 +123,22 @@ class KalshiMarketMaker:
 
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""
+        # Paginate through markets to find ones with real quotes
+        all_markets = []
+        cursor = None
+        max_pages = 5  # Up to 1000 markets
+
         try:
-            markets = await self.connector.get_markets(status="open", limit=200)
+            for _ in range(max_pages):
+                markets, cursor = await self.connector.get_markets_page(
+                    status="open", limit=200, cursor=cursor
+                )
+                all_markets.extend(markets)
+                if not cursor:
+                    break
+
+            markets = all_markets
+            log.info("scan_fetched", total_fetched=len(markets))
         except Exception as e:
             log.warning("market_scan_failed", error=str(e))
             return

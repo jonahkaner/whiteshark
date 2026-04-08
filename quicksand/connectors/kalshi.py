@@ -320,6 +320,21 @@ class KalshiConnector:
         data = await self._request("GET", "/markets", params=params)
         return [self._parse_market(m) for m in data.get("markets", [])]
 
+    async def get_markets_page(
+        self,
+        status: str = "open",
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> tuple[list[KalshiMarket], str | None]:
+        """Fetch markets with pagination. Returns (markets, next_cursor)."""
+        params: dict[str, Any] = {"status": status, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        data = await self._request("GET", "/markets", params=params)
+        markets = [self._parse_market(m) for m in data.get("markets", [])]
+        next_cursor = data.get("cursor") or None
+        return markets, next_cursor
+
     async def get_market(self, ticker: str) -> KalshiMarket:
         """Fetch a single market by ticker."""
         data = await self._request("GET", f"/markets/{ticker}")
