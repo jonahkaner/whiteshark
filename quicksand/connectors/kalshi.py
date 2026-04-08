@@ -372,7 +372,7 @@ class KalshiConnector:
             time_in_force: "gtc" (good til canceled) or "ioc" (immediate or cancel)
         """
         yes_price_cents = price if side == "yes" else (100 - price)
-        yes_price_dollars = f"{yes_price_cents / 100:.2f}"
+        yes_price_dollars = f"{yes_price_cents / 100:.4f}"
         body = {
             "ticker": ticker,
             "side": side,
