@@ -24,7 +24,7 @@ from quicksand.utils.logging import get_logger
 
 log = get_logger("kalshi")
 
-PROD_BASE = "https://api.kalshi.com/trade-api/v2"
+PROD_BASE = "https://trading-api.kalshi.com/trade-api/v2"
 DEMO_BASE = "https://demo-api.kalshi.co/trade-api/v2"
 
 
