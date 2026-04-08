@@ -171,9 +171,9 @@ class KalshiMarketMaker:
         )
 
     def _days_until_expiry(self, market: KalshiMarket) -> float:
-        """Calculate days until market expires. Returns 999 if unknown."""
+        """Calculate days until market expires. Returns 3 if unknown (include by default)."""
         if not market.expiration_time:
-            return 999
+            return 3  # Unknown expiry = assume 3 days (include it)
         try:
             # Parse ISO format expiration time
             exp_str = market.expiration_time.replace("Z", "+00:00")
@@ -182,7 +182,7 @@ class KalshiMarketMaker:
             delta = (exp_time - now).total_seconds() / 86400
             return max(0, delta)
         except (ValueError, TypeError):
-            return 999
+            return 3  # Parse error = assume 3 days (include it)
 
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""
