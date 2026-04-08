@@ -276,10 +276,6 @@
 
                 document.getElementById('balance').textContent = fmt(s.equity);
 
-                const dailyEl = document.getElementById('daily-pnl');
-                dailyEl.textContent = fmtSigned(s.daily_pnl);
-                dailyEl.className = 'pnl-value ' + pnlClass(s.daily_pnl);
-
                 const totalEl = document.getElementById('total-pnl');
                 totalEl.textContent = fmtSigned(s.total_pnl);
                 totalEl.className = 'pnl-value ' + pnlClass(s.total_pnl);
