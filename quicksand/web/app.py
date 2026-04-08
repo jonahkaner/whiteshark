@@ -59,7 +59,7 @@ app = FastAPI(title="Quicksand", lifespan=lifespan)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "dashboard.html")
 
 
 # ── API ────────────────────────────────────────────────────────────────────
