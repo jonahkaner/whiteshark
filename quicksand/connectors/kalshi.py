@@ -554,17 +554,12 @@ class KalshiConnector:
 
     async def get_portfolio_value(self) -> float:
         """Get total portfolio value (cash + positions) in dollars."""
-        try:
-            cash = await self.get_balance()
-            positions = await self.get_positions()
-            # Sum position cost basis as approximation
-            position_value = sum(p.cost_basis for p in positions)
-            total = cash + position_value
-            log.info("portfolio_value", cash=round(cash, 2), positions=round(position_value, 2), total=round(total, 2))
-            return total
-        except Exception as e:
-            log.warning("portfolio_value_failed", error=str(e))
-            return await self.get_balance()
+        data = await self._request("GET", "/portfolio/balance")
+        cash = data.get("balance", 0) / 100
+        positions = data.get("portfolio_value", 0) / 100
+        total = cash + positions
+        log.info("portfolio_value", cash=round(cash, 2), positions=round(positions, 2), total=round(total, 2))
+        return total
 
     async def get_fills(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         """Get recent fills (executed trades)."""
