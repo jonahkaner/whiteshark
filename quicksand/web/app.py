@@ -122,44 +122,84 @@ async def get_status():
 
 @app.get("/api/positions")
 async def get_positions():
-    """Current active market quotes."""
-    if _mm is None:
+    """Current open positions from Kalshi."""
+    if _connector is None:
         return []
 
-    positions = []
-    for ticker, quote in _mm.active_quotes.items():
-        positions.append({
-            "id": ticker,
-            "pair": quote.title[:50] if quote.title else ticker,
-            "exchange": "Kalshi",
-            "direction": f"Inventory: {quote.yes_inventory:+d} YES",
-            "notional": round(abs(quote.yes_inventory) * 0.50, 2),  # Approx
-            "pnl": round(quote.total_filled // 2 * _mm.config.quote_spread_cents / 100, 2),
-            "funding_collected": 0,
-            "entry_rate": f"{quote.total_filled} fills",
-            "opened": int(quote.last_update),
-        })
-    return positions
+    try:
+        positions_data = await _connector._request("GET", "/portfolio/positions")
+        positions = []
+        for p in positions_data.get("market_positions", []):
+            # Parse position count
+            pos_raw = p.get("position_fp", "0")
+            try:
+                count = int(float(pos_raw))
+            except (ValueError, TypeError):
+                count = 0
+            if count == 0:
+                continue
+
+            side = "YES" if count > 0 else "NO"
+            exposure = p.get("market_exposure_dollars", "0")
+            realized = p.get("realized_pnl_dollars", "0")
+            fees = p.get("fees_paid_dollars", "0")
+
+            try:
+                exposure_val = float(exposure)
+                realized_val = float(realized)
+                fees_val = float(fees)
+            except (ValueError, TypeError):
+                exposure_val = realized_val = fees_val = 0
+
+            positions.append({
+                "ticker": p.get("ticker", ""),
+                "side": side,
+                "count": abs(count),
+                "exposure": round(exposure_val, 2),
+                "realized_pnl": round(realized_val, 2),
+                "fees": round(fees_val, 2),
+            })
+        return positions
+    except Exception as e:
+        return []
 
 
 @app.get("/api/trades")
 async def get_trades():
     """Recent fills from Kalshi."""
-    if _connector is None or _config is None or _config.is_paper:
+    if _connector is None:
         return []
 
     try:
         fills = await _connector.get_fills(limit=50)
-        return [
-            {
-                "symbol": f.get("ticker", ""),
-                "direction": f"{f.get('side', '')} {f.get('action', '')}",
-                "pnl": 0,
-                "funding": 0,
-                "fees": 0,
-            }
-            for f in fills
-        ]
+        trades = []
+        for f in fills:
+            price_str = f.get("yes_price_dollars", "0")
+            fee_str = f.get("fee_cost", "0")
+            count_str = f.get("count_fp", "0")
+            try:
+                price = float(price_str)
+                fee = float(fee_str)
+                count = int(float(count_str))
+            except (ValueError, TypeError):
+                price = fee = 0
+                count = 0
+
+            side = f.get("side", "")
+            cost = count * price if side == "yes" else count * (1 - price)
+
+            trades.append({
+                "ticker": f.get("ticker", ""),
+                "side": side,
+                "action": f.get("action", ""),
+                "count": count,
+                "price": round(price, 4),
+                "cost": round(cost, 2),
+                "fee": round(fee, 2),
+                "is_taker": f.get("is_taker", False),
+                "time": f.get("created_time", ""),
+            })
+        return trades
     except Exception:
         return []
 

@@ -329,12 +329,11 @@
                 container.innerHTML = positions.map(p => `
                     <div class="trade-card">
                         <div class="trade-header">
-                            <span class="trade-pair">${p.pair}</span>
-                            <span class="trade-pnl ${pnlClass(p.pnl)}">${fmtSigned(p.pnl)}</span>
+                            <span class="trade-pair">${p.ticker}</span>
+                            <span class="trade-pnl ${pnlClass(p.realized_pnl)}">${fmtSigned(p.realized_pnl)}</span>
                         </div>
                         <div class="trade-detail">
-                            ${p.exchange} &middot; ${p.direction} &middot;
-                            ${fmt(p.notional)} &middot; Funding: ${fmtSigned(p.funding_collected)}
+                            ${p.side} x${p.count} &middot; Exposure: ${fmt(p.exposure)} &middot; Fees: ${fmt(p.fees)}
                         </div>
                     </div>
                 `).join('');
@@ -353,17 +352,20 @@
                     return;
                 }
 
-                container.innerHTML = trades.reverse().slice(0, 20).map(t => `
+                container.innerHTML = trades.slice(0, 20).map(t => {
+                    const maker = t.is_taker ? 'Taker' : 'Maker';
+                    const feeStr = t.fee > 0 ? ` · Fee: ${fmt(t.fee)}` : ' · No fee';
+                    return `
                     <div class="trade-card">
                         <div class="trade-header">
-                            <span class="trade-pair">${t.symbol || t.pair || ''}</span>
-                            <span class="trade-pnl ${pnlClass(t.pnl)}">${fmtSigned(t.pnl)}</span>
+                            <span class="trade-pair">${t.ticker}</span>
+                            <span class="trade-pnl neutral">${fmt(t.cost)}</span>
                         </div>
                         <div class="trade-detail">
-                            ${t.direction || ''} &middot; Funding: ${fmtSigned(t.funding || 0)} &middot; Fees: ${fmt(t.fees || 0)}
+                            ${t.side} ${t.action} x${t.count} @ ${t.price.toFixed(2)} · ${maker}${feeStr}
                         </div>
                     </div>
-                `).join('');
+                `}).join('');
             } catch (e) {}
         }
 
