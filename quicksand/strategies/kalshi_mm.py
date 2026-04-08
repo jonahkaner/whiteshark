@@ -37,12 +37,12 @@ class MarketMakingConfig:
 
     min_spread_cents: int = 3  # Minimum spread to quote (in cents)
     quote_spread_cents: int = 2  # How wide our quotes are inside the spread
-    max_position_per_market: int = 200  # Max contracts per market
-    max_total_exposure: float = 5000  # Max total $ deployed across all markets
-    max_markets: int = 20  # Max simultaneous markets to make
+    max_position_per_market: int = 100  # Max contracts per market
+    max_total_exposure: float = 2500  # Max total $ deployed across all markets
+    max_markets: int = 8  # Max simultaneous markets to make (keep low for rate limits)
     min_volume: int = 50  # Minimum 24h volume to consider a market
     min_open_interest: int = 20  # Minimum open interest
-    requote_interval_seconds: int = 30  # How often to check and re-quote
+    requote_interval_seconds: int = 60  # How often to check and re-quote
     inventory_skew: float = 0.3  # Skew quotes when inventory is one-sided
 
 
@@ -131,35 +131,33 @@ class KalshiMarketMaker:
         all_markets = []
 
         try:
-            # Strategy 1: Fetch markets from active events (finds simple binary markets)
-            events = await self.connector.get_events(status="open", limit=50)
-            for event in events:
-                event_ticker = event.get("event_ticker", "")
-                # Skip multi-event cross-category markets
-                if "CROSSCATEGORY" in event_ticker or "MULTIGAME" in event_ticker:
-                    continue
-                try:
-                    event_markets = await self.connector.get_markets(
-                        status="open", limit=50, event_ticker=event_ticker
-                    )
-                    all_markets.extend(event_markets)
-                except Exception:
-                    continue
-
-                # Don't scan too many events per tick
-                if len(all_markets) >= 500:
-                    break
-
-            # Strategy 2: Also try known popular series
-            for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXGDP",
-                           "KXWEATHER", "KXNBA", "KXMLB", "KXNFL", "KXMMA"]:
+            # Focus on liquid series with known spreads (fewer API calls)
+            for series in ["KXINX", "KXBTC", "KXETH", "KXFED", "KXGDP"]:
                 try:
                     series_markets = await self.connector.get_markets(
-                        status="open", limit=50, series_ticker=series
+                        status="open", limit=30, series_ticker=series
                     )
                     all_markets.extend(series_markets)
                 except Exception:
                     continue
+
+            # Also scan a few top events (limit to reduce API calls)
+            events = await self.connector.get_events(status="open", limit=10)
+            events_scanned = 0
+            for event in events:
+                event_ticker = event.get("event_ticker", "")
+                if "CROSSCATEGORY" in event_ticker or "MULTIGAME" in event_ticker:
+                    continue
+                try:
+                    event_markets = await self.connector.get_markets(
+                        status="open", limit=20, event_ticker=event_ticker
+                    )
+                    all_markets.extend(event_markets)
+                except Exception:
+                    continue
+                events_scanned += 1
+                if events_scanned >= 5:
+                    break
 
             markets = all_markets
             log.info("scan_fetched", total_fetched=len(markets))

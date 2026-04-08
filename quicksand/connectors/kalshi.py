@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
+import asyncio
+
 import httpx
 
 from quicksand.utils.logging import get_logger
@@ -135,6 +137,10 @@ class KalshiConnector:
         self._base_url = DEMO_BASE if demo else PROD_BASE
         self._private_key = None
         self._client = httpx.AsyncClient(timeout=15)
+        # Rate limiting: max 8 requests per second
+        self._rate_semaphore = asyncio.Semaphore(8)
+        self._last_request_time = 0.0
+        self._min_interval = 0.15  # 150ms between requests
 
     async def connect(self) -> None:
         """Load private key and verify connectivity."""
@@ -202,26 +208,46 @@ class KalshiConnector:
     async def _request(
         self, method: str, path: str, params: dict | None = None, json: dict | None = None
     ) -> dict:
-        """Make an authenticated request to the Kalshi API."""
+        """Make an authenticated request to the Kalshi API with rate limiting."""
         full_path = f"/trade-api/v2{path}"
         url = f"{self._base_url}{path}"
 
-        headers = self._sign_request(method.upper(), full_path)
+        async with self._rate_semaphore:
+            # Enforce minimum interval between requests
+            import time as _time
+            now = _time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_request_time = _time.monotonic()
 
-        resp = await self._client.request(
-            method, url, params=params, json=json, headers=headers
-        )
-        if resp.status_code >= 400:
-            log.error(
-                "api_error",
-                status=resp.status_code,
-                url=url,
-                body=resp.text[:500],
-                method=method.upper(),
-                signed_path=full_path,
-            )
-        resp.raise_for_status()
-        return resp.json()
+            headers = self._sign_request(method.upper(), full_path)
+
+            # Retry on 429 with exponential backoff
+            for attempt in range(4):
+                resp = await self._client.request(
+                    method, url, params=params, json=json, headers=headers
+                )
+                if resp.status_code == 429:
+                    wait = 2 ** attempt
+                    log.warning("rate_limited", url=url, retry_in=wait)
+                    await asyncio.sleep(wait)
+                    # Re-sign with fresh timestamp
+                    headers = self._sign_request(method.upper(), full_path)
+                    continue
+                break
+
+            if resp.status_code >= 400:
+                log.error(
+                    "api_error",
+                    status=resp.status_code,
+                    url=url,
+                    body=resp.text[:500],
+                    method=method.upper(),
+                    signed_path=full_path,
+                )
+            resp.raise_for_status()
+            return resp.json()
 
     async def close(self) -> None:
         await self._client.aclose()
