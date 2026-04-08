@@ -4,14 +4,19 @@ Kalshi is a CFTC-regulated prediction market (US-legal).
 Binary event contracts: YES/NO, priced $0.01-$0.99, pay $1 if correct.
 
 API docs: https://docs.kalshi.com
-Auth: RSA-PSS signed requests (not bearer tokens).
+Auth: RSA-PSS signed requests. Each request includes:
+  - KALSHI-ACCESS-KEY: your API key ID
+  - KALSHI-ACCESS-TIMESTAMP: unix timestamp in milliseconds
+  - KALSHI-ACCESS-SIGNATURE: RSA-PSS signature of "{timestamp}{METHOD}{path}"
 """
 
 from __future__ import annotations
 
+import base64
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -109,68 +114,128 @@ class KalshiConnector:
     """REST API connector for Kalshi.
 
     Handles authentication, market data, and order management.
-    Uses the official REST API with API key + private key auth.
+    Auth: RSA-PSS signed headers on every request.
+
+    Setup:
+    1. Go to kalshi.com → Settings → API Keys → Create
+    2. Save the API Key ID (string like "25bc41aa-...")
+    3. Download the private key file (.pem)
+    4. Pass both to this connector
     """
 
     def __init__(
         self,
-        api_key: str = "",
+        api_key_id: str = "",
         private_key_path: str = "",
         demo: bool = True,
     ):
-        self.api_key = api_key
+        self.api_key_id = api_key_id
         self.private_key_path = private_key_path
         self.demo = demo
         self._base_url = DEMO_BASE if demo else PROD_BASE
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            timeout=15,
-        )
-        self._logged_in = False
-        self._token: str = ""
+        self._private_key = None
+        self._client = httpx.AsyncClient(timeout=15)
 
     async def connect(self) -> None:
-        """Authenticate and verify connectivity."""
-        if self.api_key:
-            await self._login()
+        """Load private key and verify connectivity."""
+        self._load_private_key()
         markets = await self.get_markets(limit=1)
         log.info(
             "kalshi_connected",
             demo=self.demo,
-            markets_available=True,
+            api_key_id=self.api_key_id[:8] + "..." if self.api_key_id else "none",
+            markets_available=len(markets) > 0,
         )
+
+    def _load_private_key(self) -> None:
+        """Load the RSA private key from file."""
+        if not self.private_key_path:
+            log.warning("no_private_key", msg="Running without auth — read-only market data only")
+            return
+
+        try:
+            from cryptography.hazmat.primitives import serialization
+            with open(self.private_key_path, "rb") as f:
+                self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+            log.info("private_key_loaded", path=self.private_key_path)
+        except ImportError:
+            log.error("cryptography_not_installed", msg="pip install cryptography")
+            raise RuntimeError("Install 'cryptography' package: pip install cryptography")
+        except Exception as e:
+            log.error("private_key_load_failed", error=str(e))
+            raise
+
+    def _sign_request(self, method: str, path: str) -> dict[str, str]:
+        """Generate RSA-PSS signed auth headers for a request.
+
+        Signs: "{timestamp_ms}{METHOD}{path}" (no query params)
+        Returns headers dict with KALSHI-ACCESS-KEY, TIMESTAMP, SIGNATURE.
+        """
+        timestamp_ms = str(int(time.time() * 1000))
+
+        # Strip query parameters for signing
+        path_without_query = path.split("?")[0]
+
+        headers = {
+            "Content-Type": "application/json",
+            "KALSHI-ACCESS-KEY": self.api_key_id,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
+        }
+
+        if self._private_key:
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding
+
+            message = f"{timestamp_ms}{method}{path_without_query}".encode("utf-8")
+            signature = self._private_key.sign(
+                message,
+                crypto_padding.PSS(
+                    mgf=crypto_padding.MGF1(hashes.SHA256()),
+                    salt_length=crypto_padding.PSS.DIGEST_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+            headers["KALSHI-ACCESS-SIGNATURE"] = base64.b64encode(signature).decode("utf-8")
+
+        return headers
+
+    async def _request(
+        self, method: str, path: str, params: dict | None = None, json: dict | None = None
+    ) -> dict:
+        """Make an authenticated request to the Kalshi API."""
+        full_path = f"/trade-api/v2{path}"
+        url = f"{self._base_url}{path}"
+
+        headers = self._sign_request(method.upper(), full_path)
+
+        resp = await self._client.request(
+            method, url, params=params, json=json, headers=headers
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    # ── Authentication ─────────────────────────────────────────────────────
+    # ── Helpers ─────────────────────────────────────────────────────────────
 
-    async def _login(self) -> None:
-        """Login with email/password or API key to get a session token.
-
-        Note: Production uses RSA-PSS signed headers per request.
-        Demo mode uses simpler email/password login.
-        """
-        # For demo mode, use the login endpoint
-        if self.demo:
-            # Demo uses a simpler auth flow
-            self._client.headers["Authorization"] = f"Bearer {self.api_key}"
-            self._logged_in = True
-            return
-
-        # Production: set API key header
-        # RSA-PSS signing is handled per-request
-        self._client.headers["Authorization"] = f"Bearer {self.api_key}"
-        self._logged_in = True
-
-    def _auth_headers(self) -> dict[str, str]:
-        """Get authentication headers for a request."""
-        headers = {}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        elif self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
+    def _parse_market(self, m: dict) -> KalshiMarket:
+        return KalshiMarket(
+            ticker=m.get("ticker", ""),
+            event_ticker=m.get("event_ticker", ""),
+            title=m.get("title", ""),
+            yes_bid=m.get("yes_bid", 0),
+            yes_ask=m.get("yes_ask", 0),
+            no_bid=m.get("no_bid", 0),
+            no_ask=m.get("no_ask", 0),
+            last_price=m.get("last_price", 0),
+            volume=m.get("volume", 0),
+            open_interest=m.get("open_interest", 0),
+            status=m.get("status", ""),
+            result=m.get("result"),
+            expiration_time=m.get("expiration_time", ""),
+            category=m.get("category", ""),
+        )
 
     # ── Market Data ────────────────────────────────────────────────────────
 
@@ -191,86 +256,41 @@ class KalshiConnector:
         if series_ticker:
             params["series_ticker"] = series_ticker
 
-        resp = await self._client.get("/markets", params=params)
-        resp.raise_for_status()
-        data = resp.json()
-
-        markets = []
-        for m in data.get("markets", []):
-            markets.append(KalshiMarket(
-                ticker=m.get("ticker", ""),
-                event_ticker=m.get("event_ticker", ""),
-                title=m.get("title", ""),
-                yes_bid=m.get("yes_bid", 0),
-                yes_ask=m.get("yes_ask", 0),
-                no_bid=m.get("no_bid", 0),
-                no_ask=m.get("no_ask", 0),
-                last_price=m.get("last_price", 0),
-                volume=m.get("volume", 0),
-                open_interest=m.get("open_interest", 0),
-                status=m.get("status", ""),
-                result=m.get("result"),
-                expiration_time=m.get("expiration_time", ""),
-                category=m.get("category", ""),
-            ))
-        return markets
+        data = await self._request("GET", "/markets", params=params)
+        return [self._parse_market(m) for m in data.get("markets", [])]
 
     async def get_market(self, ticker: str) -> KalshiMarket:
         """Fetch a single market by ticker."""
-        resp = await self._client.get(f"/markets/{ticker}")
-        resp.raise_for_status()
-        m = resp.json().get("market", {})
-        return KalshiMarket(
-            ticker=m.get("ticker", ""),
-            event_ticker=m.get("event_ticker", ""),
-            title=m.get("title", ""),
-            yes_bid=m.get("yes_bid", 0),
-            yes_ask=m.get("yes_ask", 0),
-            no_bid=m.get("no_bid", 0),
-            no_ask=m.get("no_ask", 0),
-            last_price=m.get("last_price", 0),
-            volume=m.get("volume", 0),
-            open_interest=m.get("open_interest", 0),
-            status=m.get("status", ""),
-            result=m.get("result"),
-            expiration_time=m.get("expiration_time", ""),
-            category=m.get("category", ""),
-        )
+        data = await self._request("GET", f"/markets/{ticker}")
+        return self._parse_market(data.get("market", {}))
 
     async def get_orderbook(self, ticker: str, depth: int = 10) -> dict:
         """Fetch the order book for a market."""
-        resp = await self._client.get(
-            f"/markets/{ticker}/orderbook",
-            params={"depth": depth},
-        )
-        resp.raise_for_status()
-        return resp.json().get("orderbook", {})
+        data = await self._request("GET", f"/markets/{ticker}/orderbook", params={"depth": depth})
+        return data.get("orderbook", {})
 
     async def get_events(self, status: str = "active", limit: int = 50) -> list[dict]:
         """Fetch active events (parent containers for markets)."""
-        resp = await self._client.get(
-            "/events", params={"status": status, "limit": limit}
-        )
-        resp.raise_for_status()
-        return resp.json().get("events", [])
+        data = await self._request("GET", "/events", params={"status": status, "limit": limit})
+        return data.get("events", [])
 
     # ── Trading ────────────────────────────────────────────────────────────
 
     async def place_order(
         self,
         ticker: str,
-        side: str,  # "yes" or "no"
-        action: str,  # "buy" or "sell"
+        side: str,
+        action: str,
         count: int,
-        price: int,  # In cents (1-99)
-        time_in_force: str = "gtc",  # "gtc" or "ioc"
+        price: int,
+        time_in_force: str = "gtc",
     ) -> KalshiOrder:
         """Place a limit order.
 
         Args:
             ticker: Market ticker
             side: "yes" or "no"
-            action: "buy" (open position) or "sell" (close position)
+            action: "buy" or "sell"
             count: Number of contracts
             price: Price in cents (1-99)
             time_in_force: "gtc" (good til canceled) or "ioc" (immediate or cancel)
@@ -284,18 +304,12 @@ class KalshiConnector:
             "yes_price": price if side == "yes" else (100 - price),
             "time_in_force": time_in_force,
         }
-
-        resp = await self._client.post("/portfolio/orders", json=body)
-        resp.raise_for_status()
-        o = resp.json().get("order", {})
-
+        data = await self._request("POST", "/portfolio/orders", json=body)
+        o = data.get("order", {})
         return KalshiOrder(
             order_id=o.get("order_id", ""),
-            ticker=ticker,
-            side=side,
-            action=action,
-            count=count,
-            price=price,
+            ticker=ticker, side=side, action=action,
+            count=count, price=price,
             status=o.get("status", "resting"),
             filled_count=o.get("filled_count", 0),
             created_time=o.get("created_time", ""),
@@ -303,18 +317,14 @@ class KalshiConnector:
 
     async def cancel_order(self, order_id: str) -> None:
         """Cancel a resting order."""
-        resp = await self._client.delete(f"/portfolio/orders/{order_id}")
-        resp.raise_for_status()
+        await self._request("DELETE", f"/portfolio/orders/{order_id}")
         log.info("order_cancelled", order_id=order_id)
 
     async def cancel_all_orders(self, ticker: str | None = None) -> int:
         """Cancel all resting orders, optionally filtered by ticker."""
-        params = {}
-        if ticker:
-            params["ticker"] = ticker
-        resp = await self._client.delete("/portfolio/orders", params=params)
-        resp.raise_for_status()
-        count = resp.json().get("reduced_count", 0)
+        params = {"ticker": ticker} if ticker else {}
+        data = await self._request("DELETE", "/portfolio/orders", params=params)
+        count = data.get("reduced_count", 0)
         log.info("orders_cancelled", count=count, ticker=ticker)
         return count
 
@@ -325,12 +335,9 @@ class KalshiConnector:
         params: dict[str, Any] = {"status": status}
         if ticker:
             params["ticker"] = ticker
-
-        resp = await self._client.get("/portfolio/orders", params=params)
-        resp.raise_for_status()
-        orders = []
-        for o in resp.json().get("orders", []):
-            orders.append(KalshiOrder(
+        data = await self._request("GET", "/portfolio/orders", params=params)
+        return [
+            KalshiOrder(
                 order_id=o.get("order_id", ""),
                 ticker=o.get("ticker", ""),
                 side=o.get("side", ""),
@@ -340,39 +347,33 @@ class KalshiConnector:
                 status=o.get("status", ""),
                 filled_count=o.get("filled_count", 0),
                 created_time=o.get("created_time", ""),
-            ))
-        return orders
+            )
+            for o in data.get("orders", [])
+        ]
 
     # ── Portfolio ──────────────────────────────────────────────────────────
 
     async def get_balance(self) -> float:
         """Get account balance in dollars."""
-        resp = await self._client.get("/portfolio/balance")
-        resp.raise_for_status()
-        data = resp.json()
-        # Balance is in cents
-        return data.get("balance", 0) / 100
+        data = await self._request("GET", "/portfolio/balance")
+        return data.get("balance", 0) / 100  # Balance is in cents
 
     async def get_positions(self) -> list[KalshiPosition]:
         """Get all open positions."""
-        resp = await self._client.get("/portfolio/positions")
-        resp.raise_for_status()
+        data = await self._request("GET", "/portfolio/positions")
         positions = []
-        for p in resp.json().get("market_positions", []):
-            # Determine side and count from position fields
+        for p in data.get("market_positions", []):
             yes_count = p.get("position", 0)
             if yes_count > 0:
                 positions.append(KalshiPosition(
                     ticker=p.get("ticker", ""),
-                    side="yes",
-                    count=yes_count,
+                    side="yes", count=yes_count,
                     avg_price=p.get("total_cost", 0) / max(yes_count, 1),
                 ))
             elif yes_count < 0:
                 positions.append(KalshiPosition(
                     ticker=p.get("ticker", ""),
-                    side="no",
-                    count=abs(yes_count),
+                    side="no", count=abs(yes_count),
                     avg_price=p.get("total_cost", 0) / max(abs(yes_count), 1),
                 ))
         return positions
@@ -382,6 +383,5 @@ class KalshiConnector:
         params: dict[str, Any] = {"limit": limit}
         if ticker:
             params["ticker"] = ticker
-        resp = await self._client.get("/portfolio/fills", params=params)
-        resp.raise_for_status()
-        return resp.json().get("fills", [])
+        data = await self._request("GET", "/portfolio/fills", params=params)
+        return data.get("fills", [])

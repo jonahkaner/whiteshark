@@ -45,8 +45,8 @@ class MarketMakerConfig(BaseModel):
 
 
 class KalshiConfig(BaseModel):
-    api_key: str = ""
-    private_key_path: str = ""
+    api_key_id: str = ""  # API Key ID from Kalshi settings
+    private_key_path: str = ""  # Path to .pem file downloaded from Kalshi
     demo: bool = True  # Use demo/sandbox mode
 
 

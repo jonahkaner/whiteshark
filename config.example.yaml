@@ -6,9 +6,9 @@ mode: paper  # paper | live
 # ── Kalshi (US-Legal Prediction Market) ────────────────────────────────
 # This is the primary strategy. Create an account at kalshi.com
 kalshi:
-  api_key: ${KALSHI_API_KEY}
-  private_key_path: ""           # Path to RSA private key (for production)
-  demo: true                     # true = demo account (play money), false = real
+  api_key_id: ${KALSHI_API_KEY_ID}  # API Key ID from Kalshi settings
+  private_key_path: ""              # Path to .pem private key file from Kalshi
+  demo: true                        # true = demo account (play money), false = real
 
 # ── Kalshi Market Making Strategy ──────────────────────────────────────
 strategies:
