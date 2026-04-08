@@ -415,15 +415,18 @@
         async function toggleBot() {
             const btn = document.getElementById('action-btn');
             btn.disabled = true;
+            btn.textContent = isRunning ? 'Stopping...' : 'Starting...';
 
             try {
-                if (isRunning) {
-                    await fetch('/api/stop', {method: 'POST'});
-                } else {
-                    await fetch('/api/start', {method: 'POST'});
+                const endpoint = isRunning ? '/api/stop' : '/api/start';
+                const res = await fetch(endpoint, {method: 'POST'});
+                const data = await res.json();
+
+                if (data.error) {
+                    alert('Error: ' + data.error);
                 }
             } catch (e) {
-                console.error('Toggle failed:', e);
+                alert('Failed to reach server: ' + e.message);
             }
 
             btn.disabled = false;
