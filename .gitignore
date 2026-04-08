@@ -1,8 +1,9 @@
-# Secrets
+# Secrets — NEVER commit these
 config.yaml
 .env
 *.pem
 *.key
+keys/
 
 # Python
 __pycache__/
