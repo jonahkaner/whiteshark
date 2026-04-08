@@ -81,16 +81,16 @@ async def get_status():
             "uptime": 0,
         }
 
-    # Get live balance from Kalshi (or paper balance)
+    # Get total portfolio value (cash + positions)
     if _config.is_paper:
         equity = _mm._paper_balance
     else:
         try:
-            equity = await _connector.get_balance()
+            equity = await _connector.get_portfolio_value()
         except Exception:
             equity = _initial_balance + _mm._total_pnl
 
-    total_pnl = _mm._total_pnl
+    total_pnl = equity - _initial_balance
     uptime = time.time() - _start_time if _start_time else 0
 
     return {
@@ -98,7 +98,7 @@ async def get_status():
         "mode": _config.mode if _config else "paper",
         "equity": round(equity, 2),
         "initial_capital": round(_initial_balance, 2),
-        "daily_pnl": round(total_pnl, 2),  # Simplified: daily = total for now
+        "daily_pnl": round(total_pnl, 2),
         "daily_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 3),
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 2),

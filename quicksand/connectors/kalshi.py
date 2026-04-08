@@ -504,20 +504,67 @@ class KalshiConnector:
         data = await self._request("GET", "/portfolio/positions")
         positions = []
         for p in data.get("market_positions", []):
-            yes_count = p.get("position", 0)
+            # Parse position count (may be int or fp string)
+            pos_raw = p.get("position_fp") or p.get("position", 0)
+            if isinstance(pos_raw, str):
+                try:
+                    yes_count = int(float(pos_raw))
+                except (ValueError, TypeError):
+                    yes_count = 0
+            else:
+                yes_count = int(pos_raw)
+
+            if yes_count == 0:
+                continue
+
+            # Parse cost (dollar string or cents int)
+            cost_dollars = p.get("total_cost_dollars")
+            if cost_dollars:
+                try:
+                    total_cost_cents = float(cost_dollars) * 100
+                except (ValueError, TypeError):
+                    total_cost_cents = p.get("total_cost", 0)
+            else:
+                total_cost_cents = p.get("total_cost", 0)
+
+            # Parse market value if available
+            market_val_dollars = p.get("market_value_dollars") or p.get("resting_orders_value_dollars")
+            market_price = 0.0
+            if market_val_dollars:
+                try:
+                    market_price = float(market_val_dollars) * 100 / max(abs(yes_count), 1)
+                except (ValueError, TypeError):
+                    pass
+
             if yes_count > 0:
                 positions.append(KalshiPosition(
                     ticker=p.get("ticker", ""),
                     side="yes", count=yes_count,
-                    avg_price=p.get("total_cost", 0) / max(yes_count, 1),
+                    avg_price=total_cost_cents / max(yes_count, 1),
+                    market_price=market_price,
                 ))
-            elif yes_count < 0:
+            else:
                 positions.append(KalshiPosition(
                     ticker=p.get("ticker", ""),
                     side="no", count=abs(yes_count),
-                    avg_price=p.get("total_cost", 0) / max(abs(yes_count), 1),
+                    avg_price=total_cost_cents / max(abs(yes_count), 1),
+                    market_price=market_price,
                 ))
         return positions
+
+    async def get_portfolio_value(self) -> float:
+        """Get total portfolio value (cash + positions) in dollars."""
+        try:
+            cash = await self.get_balance()
+            positions = await self.get_positions()
+            # Sum position cost basis as approximation
+            position_value = sum(p.cost_basis for p in positions)
+            total = cash + position_value
+            log.info("portfolio_value", cash=round(cash, 2), positions=round(position_value, 2), total=round(total, 2))
+            return total
+        except Exception as e:
+            log.warning("portfolio_value_failed", error=str(e))
+            return await self.get_balance()
 
     async def get_fills(self, ticker: str | None = None, limit: int = 50) -> list[dict]:
         """Get recent fills (executed trades)."""
