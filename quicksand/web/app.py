@@ -1,13 +1,9 @@
 """Web dashboard for Quicksand trading bot.
 
-A simple FastAPI app that shows:
-- Current balance and P&L
-- Equity curve chart
-- Recent trades
-- Start/stop controls
-- Live status
+One-page app: balance, P&L, equity chart, positions, trades, start/stop.
+Designed to be bookmarked on a phone.
 
-Designed to be bookmarked on a phone — responsive, minimal, works everywhere.
+Runs the Kalshi market maker as the primary strategy.
 """
 
 from __future__ import annotations
@@ -22,7 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from quicksand.config import Config, load_config
-from quicksand.core.engine import Engine
+from quicksand.connectors.kalshi import KalshiConnector
+from quicksand.strategies.kalshi_mm import KalshiMarketMaker, MarketMakingConfig
 from quicksand.utils.logging import setup_logging, get_logger
 
 log = get_logger("web")
@@ -31,12 +28,14 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Global state
-_engine: Engine | None = None
-_engine_task: asyncio.Task | None = None
+_mm: KalshiMarketMaker | None = None
+_connector: KalshiConnector | None = None
+_task: asyncio.Task | None = None
 _config: Config | None = None
-_trade_history: list[dict] = []
 _equity_history: list[dict] = []
 _start_time: float | None = None
+_initial_balance: float = 0
+_running = False
 
 
 @asynccontextmanager
@@ -49,7 +48,7 @@ async def lifespan(app: FastAPI):
     setup_logging(level=_config.logging.level)
     log.info("dashboard_ready")
     yield
-    await _stop_engine()
+    await _stop_bot()
 
 
 app = FastAPI(title="Quicksand", lifespan=lifespan)
@@ -60,7 +59,6 @@ app = FastAPI(title="Quicksand", lifespan=lifespan)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """Main dashboard page."""
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
 
@@ -70,7 +68,7 @@ async def dashboard(request: Request):
 @app.get("/api/status")
 async def get_status():
     """Current bot status, balance, and P&L."""
-    if _engine is None or not _engine._running:
+    if not _running or _mm is None:
         return {
             "running": False,
             "mode": _config.mode if _config else "paper",
@@ -83,66 +81,90 @@ async def get_status():
             "uptime": 0,
         }
 
-    p = _engine.portfolio
+    # Get live balance from Kalshi (or paper balance)
+    if _config.is_paper:
+        equity = _mm._paper_balance
+    else:
+        try:
+            equity = await _connector.get_balance()
+        except Exception:
+            equity = _initial_balance + _mm._total_pnl
+
+    total_pnl = _mm._total_pnl
     uptime = time.time() - _start_time if _start_time else 0
 
     return {
         "running": True,
         "mode": _config.mode if _config else "paper",
-        "equity": round(p.equity, 2),
-        "cash": round(p.cash, 2),
-        "initial_capital": round(p.initial_capital, 2),
-        "daily_pnl": round(p.daily_pnl, 2),
-        "daily_pnl_pct": round(p.daily_pnl_pct * 100, 3),
-        "total_pnl": round(p.equity - p.initial_capital, 2),
-        "total_pnl_pct": round((p.equity / p.initial_capital - 1) * 100, 2) if p.initial_capital > 0 else 0,
-        "positions": len(p.arb_positions),
-        "utilization_pct": round(p.utilization_pct * 100, 1),
-        "drawdown_pct": round(p.drawdown_pct * 100, 2),
+        "equity": round(equity, 2),
+        "initial_capital": round(_initial_balance, 2),
+        "daily_pnl": round(total_pnl, 2),  # Simplified: daily = total for now
+        "daily_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 3),
+        "total_pnl": round(total_pnl, 2),
+        "total_pnl_pct": round(total_pnl / max(_initial_balance, 1) * 100, 2),
+        "positions": len(_mm.active_quotes),
+        "utilization_pct": round(len(_mm.active_quotes) / max(_mm.config.max_markets, 1) * 100, 1),
+        "drawdown_pct": 0,
         "uptime": int(uptime),
+        "total_trades": _mm._total_trades,
     }
 
 
 @app.get("/api/positions")
 async def get_positions():
-    """Current open positions."""
-    if _engine is None:
+    """Current active market quotes."""
+    if _mm is None:
         return []
 
     positions = []
-    for pos_id, arb in _engine.portfolio.arb_positions.items():
+    for ticker, quote in _mm.active_quotes.items():
         positions.append({
-            "id": pos_id,
-            "pair": arb.pair,
-            "exchange": arb.exchange,
-            "direction": "Long Spot / Short Perp" if arb.entry_funding_rate > 0 else "Short Spot / Long Perp",
-            "notional": round(arb.notional, 2),
-            "pnl": round(arb.total_pnl, 2),
-            "funding_collected": round(arb.funding_collected, 2),
-            "entry_rate": f"{arb.entry_funding_rate * 100:.4f}%",
-            "opened": int(arb.opened_at),
+            "id": ticker,
+            "pair": quote.title[:50] if quote.title else ticker,
+            "exchange": "Kalshi",
+            "direction": f"Inventory: {quote.yes_inventory:+d} YES",
+            "notional": round(abs(quote.yes_inventory) * 0.50, 2),  # Approx
+            "pnl": round(quote.total_filled // 2 * _mm.config.quote_spread_cents / 100, 2),
+            "funding_collected": 0,
+            "entry_rate": f"{quote.total_filled} fills",
+            "opened": int(quote.last_update),
         })
     return positions
 
 
 @app.get("/api/trades")
 async def get_trades():
-    """Recent trade history."""
-    return _trade_history[-50:]  # Last 50 trades
+    """Recent fills from Kalshi."""
+    if _connector is None or _config is None or _config.is_paper:
+        return []
+
+    try:
+        fills = await _connector.get_fills(limit=50)
+        return [
+            {
+                "symbol": f.get("ticker", ""),
+                "direction": f"{f.get('side', '')} {f.get('action', '')}",
+                "pnl": 0,
+                "funding": 0,
+                "fees": 0,
+            }
+            for f in fills
+        ]
+    except Exception:
+        return []
 
 
 @app.get("/api/equity")
 async def get_equity():
-    """Equity curve data for charting."""
-    return _equity_history[-500:]  # Last 500 data points
+    return _equity_history[-500:]
 
 
 @app.post("/api/start")
-async def start_bot(capital: float = 0):
-    """Start the trading engine."""
-    global _engine, _engine_task, _start_time, _config
+async def start_bot():
+    """Start the Kalshi market maker."""
+    global _mm, _connector, _task, _start_time, _config, _initial_balance, _running
 
-    if _engine is not None and _engine._running:
+    if _running:
         return JSONResponse({"error": "Bot is already running"}, status_code=400)
 
     try:
@@ -150,81 +172,112 @@ async def start_bot(capital: float = 0):
     except FileNotFoundError:
         return JSONResponse({"error": "config.yaml not found"}, status_code=400)
 
-    _engine = Engine(_config)
+    # Connect to Kalshi
+    kalshi_cfg = _config.kalshi
+    _connector = KalshiConnector(
+        api_key_id=kalshi_cfg.api_key_id,
+        private_key_path=kalshi_cfg.private_key_path,
+        demo=kalshi_cfg.demo,
+    )
+
+    try:
+        await _connector.connect()
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to connect to Kalshi: {e}"}, status_code=500)
+
+    # Get starting balance
+    if not _config.is_paper and kalshi_cfg.private_key_path:
+        try:
+            _initial_balance = await _connector.get_balance()
+        except Exception:
+            _initial_balance = 10000  # Fallback
+    else:
+        _initial_balance = 10000  # Paper mode default
+
+    # Create market maker
+    mm_cfg = _config.strategies.kalshi_mm
+    _mm = KalshiMarketMaker(
+        connector=_connector,
+        config=MarketMakingConfig(
+            min_spread_cents=mm_cfg.min_spread_cents,
+            quote_spread_cents=mm_cfg.quote_spread_cents,
+            max_position_per_market=mm_cfg.max_position_per_market,
+            max_total_exposure=mm_cfg.max_total_exposure,
+            max_markets=mm_cfg.max_markets,
+            min_volume=mm_cfg.min_volume,
+            min_open_interest=mm_cfg.min_open_interest,
+            requote_interval_seconds=mm_cfg.requote_interval_seconds,
+        ),
+        paper_mode=_config.is_paper,
+    )
+    await _mm.initialize(_initial_balance)
+
     _start_time = time.time()
+    _running = True
+    _task = asyncio.create_task(_run_loop())
 
-    # Start engine in background task
-    _engine_task = asyncio.create_task(_run_engine_with_tracking())
-
-    return {"status": "started", "mode": _config.mode}
+    log.info("bot_started", mode=_config.mode, balance=_initial_balance, demo=kalshi_cfg.demo)
+    return {"status": "started", "mode": _config.mode, "balance": _initial_balance}
 
 
 @app.post("/api/stop")
 async def stop_bot():
-    """Stop the trading engine gracefully."""
-    await _stop_engine()
+    await _stop_bot()
     return {"status": "stopped"}
 
 
 # ── Internal ───────────────────────────────────────────────────────────────
 
 
-async def _run_engine_with_tracking():
-    """Run the engine while recording equity snapshots."""
-    global _engine
+async def _run_loop():
+    """Main loop: tick the market maker and record equity."""
+    global _running
 
     try:
-        # Initialize
-        _engine.order_manager.set_paper_mode(_engine.config.is_paper)
-        await _engine._connect_exchanges()
-        await _engine._init_portfolio()
-        _engine._init_strategies()
-        _engine._running = True
-
-        log.info("engine_started_via_dashboard", equity=_engine.portfolio.equity)
-
-        # Main loop with equity tracking
-        while _engine._running:
+        while _running:
             try:
-                risk_check = _engine.risk_manager.check_continuous()
-                if not risk_check.allowed:
-                    log.warning("risk_check_failed", reason=risk_check.reason)
+                await _mm.on_tick()
 
-                for strategy in _engine.strategies:
-                    try:
-                        await strategy.on_tick()
-                    except Exception as e:
-                        log.error("strategy_tick_error", strategy=strategy.name, error=str(e))
+                # Record equity
+                if _config.is_paper:
+                    equity = _mm._paper_balance
+                else:
+                    equity = _initial_balance + _mm._total_pnl
 
-                # Record equity snapshot
                 _equity_history.append({
                     "time": int(time.time() * 1000),
-                    "equity": round(_engine.portfolio.equity, 2),
+                    "equity": round(equity, 2),
                 })
 
-                # Track closed positions as trades
-                # (In a production system, we'd hook into the portfolio's close events)
-
             except Exception as e:
-                log.error("loop_error", error=str(e))
+                log.error("tick_error", error=str(e))
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
-        log.error("engine_crash", error=str(e))
+        log.error("loop_crash", error=str(e))
     finally:
-        if _engine:
-            _engine._running = False
+        _running = False
 
 
-async def _stop_engine():
-    """Stop the engine and cancel the task."""
-    global _engine, _engine_task
+async def _stop_bot():
+    """Stop everything gracefully."""
+    global _mm, _connector, _task, _running
 
-    if _engine is not None:
-        await _engine.stop()
-        _engine = None
+    _running = False
 
-    if _engine_task is not None and not _engine_task.done():
-        _engine_task.cancel()
-        _engine_task = None
+    if _mm is not None:
+        await _mm.on_shutdown()
+        _mm = None
+
+    if _connector is not None:
+        await _connector.close()
+        _connector = None
+
+    if _task is not None and not _task.done():
+        _task.cancel()
+        _task = None
+
+    log.info("bot_stopped")
