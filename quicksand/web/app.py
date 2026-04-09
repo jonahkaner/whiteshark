@@ -361,6 +361,31 @@ async def debug_orders():
         return {"error": str(e)}
 
 
+@app.get("/api/debug/known-positions")
+async def debug_known_positions():
+    """Debug: show loaded positions and their expiry classification."""
+    if _mm is None:
+        return {"error": "Bot not running"}
+    result = []
+    for ticker, inventory in _mm._known_positions.items():
+        try:
+            market = await _connector.get_market(ticker)
+            days = _mm._days_until_expiry(market)
+            result.append({
+                "ticker": ticker,
+                "inventory": inventory,
+                "days_to_expiry": round(days, 1),
+                "max_days": _mm.config.max_expiry_days,
+                "would_unwind": days > _mm.config.max_expiry_days,
+                "expiration_time": market.expiration_time,
+                "yes_bid": market.yes_bid,
+                "no_bid": market.no_bid,
+            })
+        except Exception as e:
+            result.append({"ticker": ticker, "inventory": inventory, "error": str(e)})
+    return {"positions": result, "total": len(result)}
+
+
 @app.get("/api/equity")
 async def get_equity():
     return _equity_history[-500:]

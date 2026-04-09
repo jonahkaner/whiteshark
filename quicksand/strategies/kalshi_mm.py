@@ -89,6 +89,7 @@ class KalshiMarketMaker:
         self._paper_positions: dict[str, int] = {}  # ticker -> net position
         self._processed_fills: set[str] = set()  # Fill IDs already counted
         self._known_positions: dict[str, int] = {}  # ticker -> position from Kalshi
+        self._last_unwind_check = 0.0
 
     @property
     def name(self) -> str:
@@ -126,42 +127,59 @@ class KalshiMarketMaker:
 
     async def _unwind_long_dated(self) -> None:
         """Sell any positions in markets expiring beyond our max horizon."""
+        log.info(
+            "unwind_check_start",
+            total_positions=len(self._known_positions),
+            positions=dict(self._known_positions),
+        )
         for ticker, inventory in list(self._known_positions.items()):
             if inventory == 0:
                 continue
             try:
                 market = await self.connector.get_market(ticker)
                 days = self._days_until_expiry(market)
+                log.info(
+                    "unwind_check_position",
+                    ticker=ticker, inventory=inventory,
+                    days=round(days, 1), max_days=self.config.max_expiry_days,
+                    expiration_time=market.expiration_time,
+                    yes_bid=market.yes_bid, no_bid=market.no_bid,
+                    will_unwind=days > self.config.max_expiry_days,
+                )
                 if days <= self.config.max_expiry_days:
                     continue
 
                 # This position is too long-dated — sell it
                 count = abs(inventory)
                 if inventory > 0:
-                    # We hold YES — sell YES at market
+                    # We hold YES — sell YES
                     side, action = "yes", "sell"
-                    # Sell at 1 cent below current bid to fill quickly
-                    price = max(1, int(market.yes_bid) - 1)
+                    # Sell at 2 cents below current bid to fill quickly
+                    price = max(1, int(market.yes_bid) - 2)
                 else:
-                    # We hold NO (negative YES) — sell NO at market
+                    # We hold NO (negative YES) — sell NO
                     side, action = "no", "sell"
-                    price = max(1, int(market.no_bid) - 1)
+                    price = max(1, int(market.no_bid) - 2)
 
                 log.info(
                     "unwinding_long_dated",
                     ticker=ticker, days=round(days, 1),
                     side=side, count=count, price=price,
                 )
-                await self.connector.place_order(
+                order = await self.connector.place_order(
                     ticker=ticker,
                     side=side,
                     action=action,
                     count=count,
                     price=price,
                 )
-                log.info("unwind_order_placed", ticker=ticker, count=count)
+                log.info(
+                    "unwind_order_placed",
+                    ticker=ticker, count=count,
+                    order_id=order.order_id, status=order.status,
+                )
             except Exception as e:
-                log.warning("unwind_failed", ticker=ticker, error=str(e))
+                log.error("unwind_failed", ticker=ticker, error=str(e), exc_info=True)
 
     async def _sync_positions(self) -> None:
         """Periodically sync positions from Kalshi to stay accurate."""
@@ -191,6 +209,11 @@ class KalshiMarketMaker:
         # 1. Sync positions from Kalshi (live mode only)
         if not self.paper_mode:
             await self._sync_positions()
+
+            # Check for long-dated positions to unwind (every 5 minutes)
+            if now - self._last_unwind_check > 300:
+                self._last_unwind_check = now
+                await self._unwind_long_dated()
 
         # 2. Scan for good markets to make
         await self._scan_markets()
