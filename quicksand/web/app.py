@@ -287,6 +287,27 @@ async def debug_markets():
         return {"error": str(e)}
 
 
+@app.get("/api/debug/market-fields")
+async def debug_market_fields():
+    """Debug: show all field names from a raw market response."""
+    if _connector is None:
+        return {"error": "Not connected"}
+    try:
+        data = await _connector._request("GET", "/markets", params={"status": "open", "limit": 1})
+        markets = data.get("markets", [])
+        if markets:
+            m = markets[0]
+            return {
+                "all_keys": sorted(m.keys()),
+                "date_fields": {k: v for k, v in m.items() if "time" in k.lower() or "date" in k.lower() or "expir" in k.lower() or "close" in k.lower() or "settle" in k.lower()},
+                "ticker": m.get("ticker", ""),
+                "sample": {k: str(v)[:100] for k, v in m.items()},
+            }
+        return {"error": "No markets found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/debug/portfolio")
 async def debug_portfolio():
     """Debug: show raw balance and positions data from Kalshi API."""

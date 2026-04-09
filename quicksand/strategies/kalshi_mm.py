@@ -171,18 +171,47 @@ class KalshiMarketMaker:
         )
 
     def _days_until_expiry(self, market: KalshiMarket) -> float:
-        """Calculate days until market expires. Returns 3 if unknown (include by default)."""
-        if not market.expiration_time:
-            return 3  # Unknown expiry = assume 3 days (include it)
-        try:
-            # Parse ISO format expiration time
-            exp_str = market.expiration_time.replace("Z", "+00:00")
-            exp_time = datetime.fromisoformat(exp_str)
-            now = datetime.now(timezone.utc)
-            delta = (exp_time - now).total_seconds() / 86400
-            return max(0, delta)
-        except (ValueError, TypeError):
-            return 3  # Parse error = assume 3 days (include it)
+        """Calculate days until market expires."""
+        # Try API expiration field first
+        if market.expiration_time:
+            try:
+                exp_str = market.expiration_time.replace("Z", "+00:00")
+                exp_time = datetime.fromisoformat(exp_str)
+                now = datetime.now(timezone.utc)
+                delta = (exp_time - now).total_seconds() / 86400
+                return max(0, delta)
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback: parse date from ticker (e.g. KXETH-26APR09, KXFED-27MAR)
+        import re
+        ticker = market.ticker
+        # Match patterns like 26APR09 (year 2026, April 9) or 27MAR (year 2027, March)
+        m = re.search(r'-(\d{2})([A-Z]{3})(\d{2})?', ticker)
+        if m:
+            try:
+                year = 2000 + int(m.group(1))
+                month_str = m.group(2)
+                day_str = m.group(3)
+                months = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+                          "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+                month = months.get(month_str, 0)
+                if month == 0:
+                    return 999
+                day = int(day_str) if day_str else 15  # Default to mid-month
+                exp = datetime(year, month, day, tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                delta = (exp - now).total_seconds() / 86400
+                return max(0, delta)
+            except (ValueError, TypeError):
+                pass
+
+        # Check for obvious long-dated markers in ticker
+        for marker in ["-50", "-45", "-40", "-35", "-30"]:
+            if ticker.endswith(marker):
+                return 999  # Likely a decade+ market
+
+        return 999  # Unknown = exclude
 
     async def _scan_markets(self) -> None:
         """Find liquid markets with wide spreads worth making."""

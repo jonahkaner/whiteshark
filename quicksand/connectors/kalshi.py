@@ -320,7 +320,7 @@ class KalshiConnector:
             open_interest=oi,
             status=m.get("status", ""),
             result=m.get("result"),
-            expiration_time=m.get("expiration_time") or m.get("close_time") or m.get("expected_expiration_time") or m.get("end_date_time") or "",
+            expiration_time=m.get("expiration_time") or m.get("close_time") or m.get("expected_expiration_time") or m.get("end_date_time") or m.get("settle_time") or "",
             category=m.get("category", ""),
         )
 
