@@ -34,6 +34,8 @@ _mm: KalshiMarketMaker | None = None
 _connector: KalshiConnector | None = None
 _task: asyncio.Task | None = None
 _alert_task: asyncio.Task | None = None
+_health_task: asyncio.Task | None = None
+_bot_down_alerted = False  # Avoid spamming if already notified
 _config: Config | None = None
 _alerter: TelegramAlerter | None = None
 _equity_history: list[dict] = []
@@ -47,7 +49,7 @@ ET = timezone(timedelta(hours=-4))  # EDT (April = daylight saving)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _config, _alerter, _alert_task
+    global _config, _alerter, _alert_task, _health_task
     try:
         _config = load_config("config.yaml")
     except FileNotFoundError:
@@ -59,13 +61,15 @@ async def lifespan(app: FastAPI):
     if tg.enabled and tg.bot_token and tg.chat_id:
         _alerter = TelegramAlerter(bot_token=tg.bot_token, chat_id=tg.chat_id)
         _alert_task = asyncio.create_task(_daily_summary_loop())
+        _health_task = asyncio.create_task(_health_check_loop())
         log.info("telegram_alerts_enabled")
 
     log.info("dashboard_ready")
     yield
     await _stop_bot()
-    if _alert_task and not _alert_task.done():
-        _alert_task.cancel()
+    for task in [_alert_task, _health_task]:
+        if task and not task.done():
+            task.cancel()
     if _alerter:
         await _alerter.close()
 
@@ -584,11 +588,8 @@ async def _send_daily_summary():
     if not _alerter:
         return
 
+    # If bot isn't running, the health check handles that separately
     if not _running or _mm is None:
-        await _alerter.send(
-            "⚠️ <b>Quicksand Daily Check</b>\n\n"
-            "Bot is <b>NOT running</b>. Check the dashboard."
-        )
         return
 
     # Get current equity
@@ -621,3 +622,39 @@ async def _send_daily_summary():
         f"\n"
         f"Bot is running normally. ✅"
     )
+
+
+async def _health_check_loop():
+    """Check every 5 minutes if the bot is still running. Alert immediately if down."""
+    global _bot_down_alerted
+    # Wait 60 seconds before first check (give bot time to start)
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            if not _running or _mm is None:
+                if not _bot_down_alerted:
+                    _bot_down_alerted = True
+                    await _alerter.send(
+                        "🚨 <b>Quicksand is DOWN</b>\n\n"
+                        "The trading bot has stopped running.\n"
+                        "Check the dashboard: http://159.203.80.238:8000"
+                    )
+                    log.warning("health_check_bot_down_alert_sent")
+            else:
+                if _bot_down_alerted:
+                    # Bot came back — notify recovery
+                    _bot_down_alerted = False
+                    await _alerter.send(
+                        "✅ <b>Quicksand is back online</b>\n\n"
+                        "The trading bot has recovered and is running again."
+                    )
+                    log.info("health_check_bot_recovered")
+
+            await asyncio.sleep(300)  # Check every 5 minutes
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.error("health_check_error", error=str(e))
+            await asyncio.sleep(300)
