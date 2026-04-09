@@ -103,6 +103,7 @@ class KalshiMarketMaker:
         if not self.paper_mode:
             await self._load_existing_positions()
             await self._unwind_long_dated()
+            self._last_unwind_check = time.time()  # Prevent duplicate on first tick
 
         log.info("kalshi_mm_initialized", balance=starting_balance, paper=self.paper_mode)
 
