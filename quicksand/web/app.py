@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -19,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from quicksand.config import Config, load_config
 from quicksand.connectors.kalshi import KalshiConnector
+from quicksand.monitoring.alerts import TelegramAlerter
 from quicksand.strategies.kalshi_mm import KalshiMarketMaker, MarketMakingConfig
 from quicksand.utils.logging import setup_logging, get_logger
 
@@ -31,24 +33,41 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _mm: KalshiMarketMaker | None = None
 _connector: KalshiConnector | None = None
 _task: asyncio.Task | None = None
+_alert_task: asyncio.Task | None = None
 _config: Config | None = None
+_alerter: TelegramAlerter | None = None
 _equity_history: list[dict] = []
 _start_time: float | None = None
 _initial_balance: float = 0
 _running = False
 
+# Eastern Time offset (UTC-4 for EDT, UTC-5 for EST)
+ET = timezone(timedelta(hours=-4))  # EDT (April = daylight saving)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _config
+    global _config, _alerter, _alert_task
     try:
         _config = load_config("config.yaml")
     except FileNotFoundError:
         _config = Config()
     setup_logging(level=_config.logging.level)
+
+    # Initialize Telegram alerter
+    tg = _config.alerts.telegram
+    if tg.enabled and tg.bot_token and tg.chat_id:
+        _alerter = TelegramAlerter(bot_token=tg.bot_token, chat_id=tg.chat_id)
+        _alert_task = asyncio.create_task(_daily_summary_loop())
+        log.info("telegram_alerts_enabled")
+
     log.info("dashboard_ready")
     yield
     await _stop_bot()
+    if _alert_task and not _alert_task.done():
+        _alert_task.cancel()
+    if _alerter:
+        await _alerter.close()
 
 
 app = FastAPI(title="Quicksand", lifespan=lifespan)
@@ -386,6 +405,15 @@ async def debug_known_positions():
     return {"positions": result, "total": len(result)}
 
 
+@app.post("/api/test-alert")
+async def test_alert():
+    """Send a test Telegram alert now."""
+    if not _alerter:
+        return JSONResponse({"error": "Telegram alerts not configured"}, status_code=400)
+    await _send_daily_summary()
+    return {"status": "sent"}
+
+
 @app.get("/api/equity")
 async def get_equity():
     return _equity_history[-500:]
@@ -451,6 +479,10 @@ async def start_bot():
     _task = asyncio.create_task(_run_loop())
 
     log.info("bot_started", mode=_config.mode, balance=_initial_balance, demo=kalshi_cfg.demo)
+
+    if _alerter:
+        await _alerter.notify_start(mode=_config.mode, equity=_initial_balance)
+
     return {"status": "started", "mode": _config.mode, "balance": _initial_balance}
 
 
@@ -502,6 +534,11 @@ async def _stop_bot():
 
     _running = False
 
+    if _alerter and _mm is not None:
+        equity = _initial_balance + _mm._total_pnl
+        total_pnl = equity - _initial_balance
+        await _alerter.notify_stop(equity=equity, total_pnl=total_pnl)
+
     if _mm is not None:
         await _mm.on_shutdown()
         _mm = None
@@ -515,3 +552,72 @@ async def _stop_bot():
         _task = None
 
     log.info("bot_stopped")
+
+
+async def _daily_summary_loop():
+    """Send a Telegram summary every day at a configured hour (Eastern Time)."""
+    summary_hour = _config.alerts.telegram.daily_summary_hour if _config else 8
+    while True:
+        try:
+            # Calculate seconds until next summary time
+            now_et = datetime.now(ET)
+            target = now_et.replace(hour=summary_hour, minute=0, second=0, microsecond=0)
+            if now_et >= target:
+                target += timedelta(days=1)
+            wait_seconds = (target - now_et).total_seconds()
+
+            log.info("daily_summary_scheduled", next_send=target.isoformat(), wait_hours=round(wait_seconds / 3600, 1))
+            await asyncio.sleep(wait_seconds)
+
+            # Gather stats and send
+            await _send_daily_summary()
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.error("daily_summary_error", error=str(e))
+            await asyncio.sleep(3600)  # Retry in an hour on error
+
+
+async def _send_daily_summary():
+    """Collect stats and send the daily Telegram summary."""
+    if not _alerter:
+        return
+
+    if not _running or _mm is None:
+        await _alerter.send(
+            "⚠️ <b>Quicksand Daily Check</b>\n\n"
+            "Bot is <b>NOT running</b>. Check the dashboard."
+        )
+        return
+
+    # Get current equity
+    try:
+        if _config.is_paper:
+            equity = _mm._paper_balance
+        elif _connector:
+            summary = await _connector.get_portfolio_summary()
+            equity = summary["total"]
+        else:
+            equity = _initial_balance + _mm._total_pnl
+    except Exception:
+        equity = _initial_balance + _mm._total_pnl
+
+    total_pnl = equity - _initial_balance
+    total_pnl_pct = total_pnl / max(_initial_balance, 1) * 100
+    uptime = time.time() - _start_time if _start_time else 0
+    uptime_hours = uptime / 3600
+    active_markets = len(_mm.active_quotes)
+
+    await _alerter.send(
+        f"☀️ <b>Good morning — Quicksand Report</b>\n"
+        f"\n"
+        f"💰 Balance: <b>${equity:,.2f}</b>\n"
+        f"📈 Total P&L: {'🟢' if total_pnl >= 0 else '🔴'} "
+        f"<b>${total_pnl:+,.2f}</b> ({total_pnl_pct:+.2f}%)\n"
+        f"📊 Active markets: {active_markets}\n"
+        f"🔄 Total trades: {_mm._total_trades}\n"
+        f"⏱ Uptime: {uptime_hours:.0f}h\n"
+        f"\n"
+        f"Bot is running normally. ✅"
+    )

@@ -79,6 +79,7 @@ class TelegramConfig(BaseModel):
     enabled: bool = False
     bot_token: str = ""
     chat_id: str = ""
+    daily_summary_hour: int = 8  # Hour to send daily summary (Eastern Time)
 
 
 class AlertsConfig(BaseModel):
