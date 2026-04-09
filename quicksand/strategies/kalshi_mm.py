@@ -154,12 +154,15 @@ class KalshiMarketMaker:
                 if inventory > 0:
                     # We hold YES — sell YES
                     side, action = "yes", "sell"
-                    # Sell at 2 cents below current bid to fill quickly
-                    price = max(1, int(market.yes_bid) - 2)
+                    # Use yes_bid, or derive from no_ask if yes_bid is 0
+                    bid = market.yes_bid if market.yes_bid > 0 else (100 - market.no_ask if market.no_ask > 0 else 0)
+                    price = max(1, int(bid) - 2)
                 else:
                     # We hold NO (negative YES) — sell NO
                     side, action = "no", "sell"
-                    price = max(1, int(market.no_bid) - 2)
+                    # Use no_bid, or derive from yes_ask if no_bid is 0
+                    bid = market.no_bid if market.no_bid > 0 else (100 - market.yes_ask if market.yes_ask > 0 else 0)
+                    price = max(1, int(bid) - 2)
 
                 log.info(
                     "unwinding_long_dated",

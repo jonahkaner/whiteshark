@@ -60,7 +60,7 @@ class KalshiMMConfig(BaseModel):
     min_volume: int = 0
     min_open_interest: int = 0
     requote_interval_seconds: int = 45
-    max_expiry_days: int = 7
+    max_expiry_days: int = 30
     order_size: int = 50
 
 
