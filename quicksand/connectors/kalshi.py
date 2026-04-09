@@ -567,19 +567,22 @@ class KalshiConnector:
         position_value = balance_data.get("portfolio_value", 0) / 100
         total = cash + position_value
 
-        # Sum realized P&L and fees from positions
+        # Sum cost and fees for open positions
         positions_data = await self._request("GET", "/portfolio/positions")
-        realized_pnl = 0.0
         total_fees = 0.0
+        open_cost = 0.0  # Cost basis of currently open positions
         for p in positions_data.get("event_positions", []):
-            rpnl = p.get("realized_pnl_dollars", "0")
             fees = p.get("fees_paid_dollars", "0")
+            exposure = p.get("event_exposure_dollars", "0")
+            cost = p.get("total_cost_dollars", "0")
             try:
-                realized_pnl += float(rpnl)
+                total_fees += float(fees)
             except (ValueError, TypeError):
                 pass
             try:
-                total_fees += float(fees)
+                exp = float(exposure)
+                if exp > 0:  # Has open positions
+                    open_cost += float(cost)
             except (ValueError, TypeError):
                 pass
 
@@ -587,7 +590,7 @@ class KalshiConnector:
             "cash": round(cash, 2),
             "position_value": round(position_value, 2),
             "total": round(total, 2),
-            "realized_pnl": round(realized_pnl, 2),
+            "open_cost": round(open_cost, 2),
             "total_fees": round(total_fees, 2),
         }
 

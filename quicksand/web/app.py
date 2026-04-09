@@ -91,9 +91,12 @@ async def get_status():
         try:
             summary = await _connector.get_portfolio_summary()
             equity = summary["total"]
-            realized_pnl = summary["realized_pnl"]
             total_fees = summary["total_fees"]
-            unrealized_pnl = (equity - _initial_balance) - realized_pnl
+            total_pnl = equity - _initial_balance
+            # Unrealized = market value of open positions minus their cost
+            unrealized_pnl = summary["position_value"] - summary["open_cost"]
+            # Realized = everything else (settled profits already in cash)
+            realized_pnl = total_pnl - unrealized_pnl
         except Exception:
             equity = _initial_balance + _mm._total_pnl
 
