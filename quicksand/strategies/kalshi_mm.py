@@ -101,6 +101,7 @@ class KalshiMarketMaker:
         # Load existing positions from Kalshi on startup
         if not self.paper_mode:
             await self._load_existing_positions()
+            await self._unwind_long_dated()
 
         log.info("kalshi_mm_initialized", balance=starting_balance, paper=self.paper_mode)
 
@@ -122,6 +123,45 @@ class KalshiMarketMaker:
             log.info("positions_loaded", count=len(self._known_positions))
         except Exception as e:
             log.warning("load_positions_failed", error=str(e))
+
+    async def _unwind_long_dated(self) -> None:
+        """Sell any positions in markets expiring beyond our max horizon."""
+        for ticker, inventory in list(self._known_positions.items()):
+            if inventory == 0:
+                continue
+            try:
+                market = await self.connector.get_market(ticker)
+                days = self._days_until_expiry(market)
+                if days <= self.config.max_expiry_days:
+                    continue
+
+                # This position is too long-dated — sell it
+                count = abs(inventory)
+                if inventory > 0:
+                    # We hold YES — sell YES at market
+                    side, action = "yes", "sell"
+                    # Sell at 1 cent below current bid to fill quickly
+                    price = max(1, int(market.yes_bid) - 1)
+                else:
+                    # We hold NO (negative YES) — sell NO at market
+                    side, action = "no", "sell"
+                    price = max(1, int(market.no_bid) - 1)
+
+                log.info(
+                    "unwinding_long_dated",
+                    ticker=ticker, days=round(days, 1),
+                    side=side, count=count, price=price,
+                )
+                await self.connector.place_order(
+                    ticker=ticker,
+                    side=side,
+                    action=action,
+                    count=count,
+                    price=price,
+                )
+                log.info("unwind_order_placed", ticker=ticker, count=count)
+            except Exception as e:
+                log.warning("unwind_failed", ticker=ticker, error=str(e))
 
     async def _sync_positions(self) -> None:
         """Periodically sync positions from Kalshi to stay accurate."""
